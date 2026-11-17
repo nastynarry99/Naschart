@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="naschart-bg" x1="48" y1="32" x2="464" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#3b76ff" />
+      <stop offset="52%" stop-color="#2962ff" />
+      <stop offset="100%" stop-color="#1444cc" />
+    </linearGradient>
+    <radialGradient id="naschart-glow" cx="50%" cy="22%" r="65%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.22" />
+      <stop offset="100%" stop-color="#2962ff" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="candle-soft" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#e8f0ff" />
+      <stop offset="100%" stop-color="#bfd6ff" />
+    </linearGradient>
+  </defs>
+
+  <!-- App Icon Rounded Container -->
+  <rect width="512" height="512" rx="112" fill="url(#naschart-bg)" />
+  <rect width="512" height="512" rx="112" fill="url(#naschart-glow)" />
+  <rect
+    x="3"
+    y="3"
+    width="506"
+    height="506"
+    rx="109"
+    stroke="#ffffff"
+    stroke-opacity="0.22"
+    stroke-width="4"
+  />
+
+  <!-- Subtle Ascending Pulse Trendline -->
+  <path
+    d="M96 364L160 326L256 266L352 192L416 144"
+    stroke="#ffffff"
+    stroke-opacity="0.24"
+    stroke-width="10"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+
+  <!-- Candle 1 (Left) -->
+  <line
+    x1="160"
+    y1="234"
+    x2="160"
+    y2="378"
+    stroke="#dbeafe"
+    stroke-width="14"
+    stroke-linecap="round"
+  />
+  <rect x="136" y="264" width="48" height="82" rx="11" fill="url(#candle-soft)" />
+
+  <!-- Candle 2 (Center) -->
+  <line
+    x1="256"
+    y1="170"
+    x2="256"
+    y2="344"
+    stroke="#ffffff"
+    stroke-width="14"
+    stroke-linecap="round"
+  />
+  <rect x="232" y="206" width="48" height="104" rx="11" fill="#ffffff" />
+
+  <!-- Candle 3 (Right Breakout) -->
+  <line
+    x1="352"
+    y1="114"
+    x2="352"
+    y2="292"
+    stroke="#ffffff"
+    stroke-width="14"
+    stroke-linecap="round"
+  />
+  <rect x="328" y="144" width="48" height="112" rx="11" fill="#ffffff" />
+</svg>

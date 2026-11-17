@@ -1,0 +1,76 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --tv-bg: #ffffff;
+    --tv-surface: #f8fafd;
+    --tv-border: #f0f3fa;
+    --tv-border-strong: #e0e3eb;
+    --tv-text: #131722;
+    --tv-muted: #787b86;
+    --tv-accent: #2962ff;
+    --tv-accent-dark: #0c3299;
+  }
+
+  .dark {
+    --tv-bg: #131722;
+    --tv-surface: #1e222d;
+    --tv-border: #2a2e39;
+    --tv-border-strong: #363a45;
+    --tv-text: #d1d4dc;
+    --tv-muted: #868993;
+    --tv-accent: #2962ff;
+    --tv-accent-dark: #0c3299;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    background-color: var(--tv-bg);
+    color: var(--tv-text);
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior: none;
+  }
+}
+
+.font-mono-tabular {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom sleek scrollbar for watchlists and modals */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(120, 123, 134, 0.25);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(120, 123, 134, 0.45);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
