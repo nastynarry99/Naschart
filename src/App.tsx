@@ -671,8 +671,8 @@ export default function App() {
   }, [appearance]);
 
   useEffect(() => {
-    syncLiveApiCredentials(appearance.twelveDataApiKey, appearance.finnhubApiKey);
-  }, [appearance.twelveDataApiKey, appearance.finnhubApiKey]);
+    syncLiveApiCredentials(appearance.finnhubApiKey);
+  }, [appearance.finnhubApiKey]);
 
   useEffect(() => {
     try {
@@ -2260,7 +2260,7 @@ export default function App() {
             type="button"
             onClick={() => setActiveSheet('settings')}
             aria-label="Chart settings"
-            title="Custom Chart Colors, Theme & Twelve Data Key"
+            title="Custom Chart Colors, Theme & Finnhub API Key"
             className="flex min-h-[34px] min-w-[34px] shrink-0 items-center justify-center rounded-lg text-[#131722] transition-colors hover:bg-[#f0f3fa] dark:text-[#d1d4dc] dark:hover:bg-[#1e222d]"
           >
             <Settings className="h-[18px] w-[18px]" />

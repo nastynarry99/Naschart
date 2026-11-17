@@ -12,7 +12,11 @@ import {
   type Time,
   type UTCTimestamp,
 } from 'lightweight-charts';
-import { ChevronsRight, GripVertical, Plus } from 'lucide-react';
+import {
+  ChevronsRight,
+  GripVertical,
+  Plus,
+} from 'lucide-react';
 import {
   forwardRef,
   useCallback,
@@ -28,6 +32,7 @@ import {
   formatPrice,
   getDecimalsForPrice,
   getDefaultHistoryCount,
+  sanitizeCandleSeries,
   subscribeMarketStream,
 } from '../services/binance';
 import {
@@ -57,7 +62,7 @@ import {
   calculateRSI,
   calculateSMA,
 } from '../utils/indicators';
-import { getMarketStatus } from '../utils/marketHours';
+import { getMarketStatus, getSymbolCategory } from '../utils/marketHours';
 import {
   getDefaultOrderQty,
   getSpreadForPrice,
@@ -427,6 +432,12 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
 
   const liveCandleRef = useRef<Candle | null>(null);
   liveCandleRef.current = liveCandle;
+  const targetLiveCandleRef = useRef<Candle | null>(null);
+  const displayLiveCandleRef = useRef<Candle | null>(null);
+  const candleAnimRafRef = useRef<number | null>(null);
+  const candleAnimLastMsRef = useRef<number>(0);
+  const lastReactTickSyncMsRef = useRef<number>(0);
+  const lastSeriesTimeRef = useRef<number>(0);
   const onMarketTickRef = useRef(onMarketTick);
   onMarketTickRef.current = onMarketTick;
   const replayProgressRef = useRef<{
@@ -489,7 +500,7 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
       });
       chart.priceScale('right').applyOptions({
         autoScale: true,
-        scaleMargins: { top: 0.18, bottom: 0.18 },
+        scaleMargins: { top: 0.15, bottom: 0.15 },
       });
     } catch {
       // Ignore if chart disposed mid-transition
@@ -502,7 +513,7 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
       try {
         chartRef.current.priceScale('right').applyOptions({
           autoScale: true,
-          scaleMargins: { top: 0.18, bottom: 0.18 },
+          scaleMargins: { top: 0.15, bottom: 0.15 },
         });
         chartRef.current.timeScale().fitContent();
       } catch {
@@ -664,23 +675,25 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
 
       if (candles.length === 0 || targetTimeSec < earliest - stepSec * 2) {
         setLoading(true);
-        const { candles: windowCandles, simulated: isSim } =
-          await fetchHistoricalCandlesAround(
-            paneRef.current.symbol,
-            paneRef.current.timeframe,
-            targetTimeSec,
-            appearanceRef.current.twelveDataApiKey,
-            appearanceRef.current.finnhubApiKey
-          );
+        const aroundRes = await fetchHistoricalCandlesAround(
+          paneRef.current.symbol,
+          paneRef.current.timeframe,
+          targetTimeSec,
+          appearanceRef.current.finnhubApiKey
+        );
         setLoading(false);
 
+        const windowCandles = sanitizeCandleSeries(aroundRes.candles);
         if (!chartDisposedRef.current && windowCandles.length > 0 && candleSeriesRef.current) {
           fullCandlesRef.current = windowCandles;
-          setSimulated(isSim);
+          setSimulated(aroundRes.simulated);
+          lastSeriesTimeRef.current = Number(windowCandles[windowCandles.length - 1].time);
           candleSeriesRef.current.setData(windowCandles);
           setRenderedCandles([...windowCandles]);
           syncIndicatorsData(windowCandles);
           const lastBar = windowCandles[windowCandles.length - 1];
+          targetLiveCandleRef.current = lastBar ? { ...lastBar } : null;
+          displayLiveCandleRef.current = lastBar ? { ...lastBar } : null;
           setLiveCandle(lastBar);
           if (isActiveRef.current) {
             onReplayTotalChange(windowCandles.length);
@@ -1132,14 +1145,14 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
       rightPriceScale: {
         autoScale: true,
         borderColor: bgDark ? '#2a2e39' : '#e0e3eb',
-        scaleMargins: { top: 0.18, bottom: 0.18 },
+        scaleMargins: { top: 0.15, bottom: 0.15 },
       },
       timeScale: {
         borderColor: bgDark ? '#2a2e39' : '#e0e3eb',
         timeVisible: true,
         secondsVisible: true,
-        rightOffset: 14,
-        barSpacing: 5,
+        rightOffset: 12,
+        barSpacing: 6,
       },
       localization: {
         timeFormatter: (time: Time) => formatAxisTime(time, paneRef.current.timeframe),
@@ -1369,6 +1382,12 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
       el.removeEventListener('pointerup', clearLongPress, true);
       el.removeEventListener('pointercancel', clearLongPress, true);
       el.removeEventListener('contextmenu', handleAxisContextMenu, true);
+      if (candleAnimRafRef.current !== null) {
+        cancelAnimationFrame(candleAnimRafRef.current);
+        candleAnimRafRef.current = null;
+      }
+      targetLiveCandleRef.current = null;
+      displayLiveCandleRef.current = null;
       chartDisposedRef.current = true;
       try {
         chart.unsubscribeCrosshairMove(handleCrosshairMove);
@@ -1443,7 +1462,7 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
       },
       rightPriceScale: {
         borderColor: bgDark ? '#2a2e39' : '#e0e3eb',
-        scaleMargins: { top: 0.18, bottom: 0.18 },
+        scaleMargins: { top: 0.15, bottom: 0.15 },
       },
       timeScale: {
         borderColor: bgDark ? '#2a2e39' : '#e0e3eb',
@@ -1501,30 +1520,25 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
         targetReplayTime !== undefined &&
         targetReplayTime < nowSec - approxHistorySpanSec * 0.75;
 
-      const [histRes, t24] = await Promise.all([
+      const [initialHistRes, t24] = await Promise.all([
         needsWindowAroundTarget && targetReplayTime !== undefined
           ? fetchHistoricalCandlesAround(
               pane.symbol,
               pane.timeframe,
               targetReplayTime,
-              appearance.twelveDataApiKey,
               appearance.finnhubApiKey
             )
           : fetchHistoricalCandles(
               pane.symbol,
               pane.timeframe,
-              appearance.twelveDataApiKey,
               appearance.finnhubApiKey
             ),
-        fetchTicker24h(
-          pane.symbol,
-          appearance.twelveDataApiKey,
-          appearance.finnhubApiKey
-        ),
+        fetchTicker24h(pane.symbol, appearance.finnhubApiKey),
       ]);
       if (cancelled || chartDisposedRef.current) return;
 
-      let { candles, simulated: isSim } = histRes;
+      let histRes = initialHistRes;
+      let candles = histRes.candles;
       if (
         activeReplayAtStart &&
         targetReplayTime !== undefined &&
@@ -1535,19 +1549,21 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
           pane.symbol,
           pane.timeframe,
           targetReplayTime,
-          appearance.twelveDataApiKey,
           appearance.finnhubApiKey
         );
         if (cancelled || chartDisposedRef.current) return;
         if (aroundRes.candles.length > 0) {
+          histRes = aroundRes;
           candles = aroundRes.candles;
-          isSim = aroundRes.simulated;
         }
       }
 
+      candles = sanitizeCandleSeries(candles);
+
       fullCandlesRef.current = candles;
       loadedSeriesKeyRef.current = seriesKey;
-      setSimulated(isSim);
+      setSimulated(histRes.simulated);
+
       if (t24) {
         setTicker(t24);
       } else if (candles.length >= 2) {
@@ -1612,10 +1628,16 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
           ? candles.slice(0, Math.min(effectiveReplayIdx + 1, candles.length))
           : candles;
 
+        lastSeriesTimeRef.current =
+          displayCandles.length > 0
+            ? Number(displayCandles[displayCandles.length - 1].time)
+            : 0;
         candleSeriesRef.current.setData(displayCandles);
         setRenderedCandles([...displayCandles]);
         syncIndicatorsData(displayCandles);
         const currentBar = displayCandles[displayCandles.length - 1];
+        targetLiveCandleRef.current = currentBar ? { ...currentBar } : null;
+        displayLiveCandleRef.current = currentBar ? { ...currentBar } : null;
         setLiveCandle(currentBar);
         if (currentBar) {
           onMarketTickRef.current(pane.symbol, currentBar, activeReplay);
@@ -1641,13 +1663,13 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
         chartRef.current.applyOptions({
           rightPriceScale: {
             autoScale: true,
-            scaleMargins: { top: 0.18, bottom: 0.18 },
+            scaleMargins: { top: 0.15, bottom: 0.15 },
           },
           timeScale: {
             timeVisible: !isDailyOrHigher,
             secondsVisible: true,
-            barSpacing: 5,
-            rightOffset: 14,
+            barSpacing: 6,
+            rightOffset: 12,
           },
           localization: {
             timeFormatter: (time: Time) => formatAxisTime(time, pane.timeframe),
@@ -1657,7 +1679,7 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
         setShowScrollToEnd(false);
         chartRef.current.priceScale('right').applyOptions({
           autoScale: true,
-          scaleMargins: { top: 0.18, bottom: 0.18 },
+          scaleMargins: { top: 0.15, bottom: 0.15 },
         });
       }
 
@@ -1667,27 +1689,39 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
         pane.symbol,
         pane.timeframe,
         candles[candles.length - 1],
-        appearance.twelveDataApiKey,
         {
           onStatusChange: (live) => {
-            if (!cancelled) setSimulated(!live);
+            if (cancelled) return;
+            if (live) setSimulated(false);
           },
           onMarketStateChange: () => {
             if (!cancelled) setMarketStatus(getMarketStatus(pane.symbol));
           },
           onCandle: (candle) => {
             if (cancelled || chartDisposedRef.current) return;
+            const candleTimeNum = Math.floor(Number(candle.time));
+            if (!Number.isFinite(candleTimeNum) || candleTimeNum <= 0 || !Number.isFinite(candle.close) || candle.close <= 0) {
+              return;
+            }
+            const cleanCandle: Candle = { ...candle, time: candleTimeNum as UTCTimestamp };
             const buffer = fullCandlesRef.current;
             let isNewBar = false;
+            let closedPrevExact: Candle | null = null;
             if (buffer.length === 0) {
-              buffer.push(candle);
+              buffer.push(cleanCandle);
               isNewBar = true;
             } else {
               const last = buffer[buffer.length - 1];
-              if (Number(candle.time) === Number(last.time)) {
-                buffer[buffer.length - 1] = candle;
-              } else if (Number(candle.time) > Number(last.time)) {
-                buffer.push(candle);
+              const lastTimeNum = Number(last.time);
+              if (candleTimeNum < lastTimeNum) {
+                // Ignore stale out-of-order ticks so Lightweight Charts never receives older timestamps
+                return;
+              }
+              if (candleTimeNum === lastTimeNum) {
+                buffer[buffer.length - 1] = cleanCandle;
+              } else {
+                closedPrevExact = { ...last };
+                buffer.push(cleanCandle);
                 if (buffer.length > 3500) buffer.shift();
                 isNewBar = true;
               }
@@ -1697,15 +1731,134 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
               return;
             }
 
-            candleSeriesRef.current?.update(candle);
-            setLiveCandle(candle);
-            onMarketTickRef.current(pane.symbol, candle, false);
-            setTicker((prev) =>
-              prev ? { ...prev, lastPrice: candle.close } : prev
-            );
             if (isNewBar) {
+              // Snap finalized prior candle cleanly to its exact OHLC before opening new bar
+              if (closedPrevExact && Number(closedPrevExact.time) >= lastSeriesTimeRef.current) {
+                try {
+                  lastSeriesTimeRef.current = Number(closedPrevExact.time);
+                  candleSeriesRef.current?.update(closedPrevExact);
+                } catch {
+                  // Ignore if series was reset mid-frame
+                }
+              }
+              displayLiveCandleRef.current = {
+                time: cleanCandle.time,
+                open: cleanCandle.open,
+                high: cleanCandle.open,
+                low: cleanCandle.open,
+                close: cleanCandle.open,
+                volume: cleanCandle.volume,
+              };
               setRenderedCandles([...buffer]);
               syncIndicatorsData(buffer);
+            } else if (
+              !displayLiveCandleRef.current ||
+              Number(displayLiveCandleRef.current.time) !== candleTimeNum
+            ) {
+              displayLiveCandleRef.current = { ...cleanCandle };
+            }
+
+            targetLiveCandleRef.current = { ...cleanCandle };
+
+            if (candleAnimRafRef.current === null) {
+              candleAnimLastMsRef.current = performance.now();
+              const stepAnimation = (nowMs: number) => {
+                candleAnimRafRef.current = null;
+                if (
+                  cancelled ||
+                  chartDisposedRef.current ||
+                  !candleSeriesRef.current ||
+                  (isActiveRef.current && replayRef.current.active)
+                ) {
+                  return;
+                }
+                const target = targetLiveCandleRef.current;
+                const cur = displayLiveCandleRef.current;
+                if (!target || !cur) return;
+
+                if (Number(target.time) < lastSeriesTimeRef.current) {
+                  return;
+                }
+
+                const dtSec = Math.min(
+                  0.05,
+                  Math.max(0.004, (nowMs - candleAnimLastMsRef.current) / 1000)
+                );
+                candleAnimLastMsRef.current = nowMs;
+
+                const decimals = getDecimalsForPrice(target.close);
+                const snapTol = Math.max(
+                  Math.pow(10, -decimals) * 0.35,
+                  Math.abs(target.close) * 1e-7
+                );
+                const diff = target.close - cur.close;
+                const alpha = 1 - Math.exp(-24 * dtSec);
+                const candidateClose = cur.close + diff * alpha;
+                const settled = Math.abs(target.close - candidateClose) <= snapTol;
+                const frameClose = settled ? target.close : candidateClose;
+
+                const frameBar: Candle = settled
+                  ? { ...target }
+                  : {
+                      time: target.time,
+                      open: target.open,
+                      high: Math.max(cur.high, frameClose, target.open),
+                      low: Math.min(cur.low, frameClose, target.open),
+                      close: frameClose,
+                      volume: target.volume,
+                    };
+
+                displayLiveCandleRef.current = frameBar;
+                try {
+                  lastSeriesTimeRef.current = Number(frameBar.time);
+                  candleSeriesRef.current.update(frameBar);
+                } catch {
+                  return;
+                }
+
+                const chartInst = chartRef.current;
+                if (chartInst) {
+                  try {
+                    const priceY = candleSeriesRef.current.priceToCoordinate(frameBar.close);
+                    const scaleW = chartInst.priceScale('right').width();
+                    const paneH = chartInst.paneSize(0).height;
+                    if (priceY !== null && paneH > 0 && scaleW > 0) {
+                      const top = Math.max(2, Math.min(paneH - 18, priceY + 9));
+                      const width = Math.max(54, Math.round(scaleW) - 1);
+                      setCountdownAnchor((prev) =>
+                        prev && Math.abs(prev.top - top) < 0.5 && prev.width === width
+                          ? prev
+                          : { top, width }
+                      );
+                    }
+                  } catch {
+                    // Ignore transient coordinate read
+                  }
+                }
+
+                if (settled || nowMs - lastReactTickSyncMsRef.current >= 55) {
+                  lastReactTickSyncMsRef.current = nowMs;
+                  setLiveCandle(frameBar);
+                  onMarketTickRef.current(pane.symbol, target, false);
+                  setTicker((prev) =>
+                    prev ? { ...prev, lastPrice: frameBar.close } : prev
+                  );
+                }
+
+                if (!settled) {
+                  candleAnimRafRef.current = requestAnimationFrame(stepAnimation);
+                }
+              };
+              candleAnimRafRef.current = requestAnimationFrame(stepAnimation);
+            }
+
+            if (isNewBar) {
+              lastReactTickSyncMsRef.current = performance.now();
+              setLiveCandle(candle);
+              onMarketTickRef.current(pane.symbol, candle, false);
+              setTicker((prev) =>
+                prev ? { ...prev, lastPrice: candle.close } : prev
+              );
             }
           },
         },
@@ -1717,12 +1870,17 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
 
     return () => {
       cancelled = true;
+      if (candleAnimRafRef.current !== null) {
+        cancelAnimationFrame(candleAnimRafRef.current);
+        candleAnimRafRef.current = null;
+      }
+      targetLiveCandleRef.current = null;
+      displayLiveCandleRef.current = null;
       unsubscribeStream?.();
     };
   }, [
     pane.symbol,
     pane.timeframe,
-    appearance.twelveDataApiKey,
     appearance.finnhubApiKey,
     onReplayTotalChange,
     syncIndicatorsData,
@@ -1752,8 +1910,14 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
     if (chartDisposedRef.current || !candleSeriesRef.current || buffer.length === 0) return;
 
     if (isActive && replay.active && !replay.selectingStart) {
+      if (candleAnimRafRef.current !== null) {
+        cancelAnimationFrame(candleAnimRafRef.current);
+        candleAnimRafRef.current = null;
+      }
       const endIdx = Math.max(0, Math.min(replay.currentIndex, buffer.length - 1));
       const sliced = buffer.slice(0, endIdx + 1);
+      lastSeriesTimeRef.current =
+        sliced.length > 0 ? Number(sliced[sliced.length - 1].time) : 0;
       candleSeriesRef.current.setData(sliced);
       setRenderedCandles(sliced);
       syncIndicatorsData(sliced);
@@ -1763,10 +1927,14 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
         onMarketTickRef.current(pane.symbol, replayBar, true);
       }
     } else if (!replay.active) {
+      lastSeriesTimeRef.current =
+        buffer.length > 0 ? Number(buffer[buffer.length - 1].time) : 0;
       candleSeriesRef.current.setData(buffer);
       setRenderedCandles([...buffer]);
       syncIndicatorsData(buffer);
       const liveBar = buffer[buffer.length - 1];
+      targetLiveCandleRef.current = liveBar ? { ...liveBar } : null;
+      displayLiveCandleRef.current = liveBar ? { ...liveBar } : null;
       setLiveCandle(liveBar);
       if (liveBar) {
         onMarketTickRef.current(pane.symbol, liveBar, false);
@@ -2077,7 +2245,7 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
         return;
       }
 
-      if (!marketStatus.isOpen) {
+      if (!marketStatus.isOpen && !simulated) {
         setCountdownText('Closed');
         return;
       }
@@ -2101,6 +2269,7 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
     replay.currentIndex,
     pane.timeframe,
     marketStatus.isOpen,
+    simulated,
   ]);
 
   // Precision Crosshair Placement Mode (for all 1-point, 2-point, and 3-point drawing tools)
@@ -2670,9 +2839,6 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
 
           {isActive && replay.active && (
             <span className="text-[11px] font-semibold text-[#2962ff]">Replay</span>
-          )}
-          {marketStatus.isOpen && simulated && (
-            <span className="text-[11px] font-medium text-[#787b86]">Simulated</span>
           )}
         </div>
 

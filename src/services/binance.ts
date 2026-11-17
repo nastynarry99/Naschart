@@ -13,25 +13,27 @@ const REST_BASES = [
   'https://data-api.binance.vision',
 ];
 
-const WS_BASE = 'wss://stream.binance.com:9443/ws';
+const WS_BASES = [
+  'wss://data-stream.binance.vision/ws',
+  'wss://stream.binance.com:9443/ws',
+  'wss://stream.binance.us:9443/ws',
+];
 const CRYPTOCOMPARE_REST = 'https://min-api.cryptocompare.com/data';
-const TWELVE_REST = 'https://api.twelvedata.com';
-const TWELVE_WS = 'wss://ws.twelvedata.com/v1/quotes/price';
 const FINNHUB_REST = 'https://finnhub.io/api/v1';
 const FINNHUB_WS = 'wss://ws.finnhub.io';
 
 export const BASE_PRICES: Record<string, number> = {
   // Futures
-  'NQ1!': 27724.0,
-  'ES1!': 7544.0,
-  'YM1!': 52432.0,
-  'CL1!': 88.0,
+  'NQ1!': 20957.5,
+  'ES1!': 5979.75,
+  'YM1!': 43887.6,
+  'CL1!': 72.5,
   // Stocks
-  AAPL: 356.27,
-  NVDA: 162.85,
-  TSLA: 390.22,
-  MSFT: 523.88,
-  AMZN: 266.66,
+  AAPL: 228.5,
+  NVDA: 142.8,
+  TSLA: 325.4,
+  MSFT: 422.1,
+  AMZN: 210.4,
   // Crypto fallbacks
   BTCUSDT: 94250.0,
   ETHUSDT: 3380.0,
@@ -83,30 +85,6 @@ const BINANCE_INTERVAL_MAP: Record<Timeframe, BinanceIntervalSource> = {
   '1d': { baseInterval: '1d', bucketSeconds: 86400, aggregate: false, batches: 1, limit: 365 },
   '1w': { baseInterval: '1w', bucketSeconds: 604800, aggregate: false, batches: 1, limit: 260 },
   '1M': { baseInterval: '1M', bucketSeconds: 2592000, aggregate: false, batches: 1, limit: 120 },
-};
-
-const TWELVE_DATA_INTERVAL_MAP: Record<
-  Timeframe,
-  { interval: string; bucketSeconds: number; aggregate: boolean }
-> = {
-  '1s': { interval: '1min', bucketSeconds: 1, aggregate: false },
-  '5s': { interval: '1min', bucketSeconds: 5, aggregate: false },
-  '15s': { interval: '1min', bucketSeconds: 15, aggregate: false },
-  '30s': { interval: '1min', bucketSeconds: 30, aggregate: false },
-  '1m': { interval: '1min', bucketSeconds: 60, aggregate: false },
-  '2m': { interval: '1min', bucketSeconds: 120, aggregate: true },
-  '3m': { interval: '1min', bucketSeconds: 180, aggregate: true },
-  '4m': { interval: '1min', bucketSeconds: 240, aggregate: true },
-  '5m': { interval: '5min', bucketSeconds: 300, aggregate: false },
-  '15m': { interval: '15min', bucketSeconds: 900, aggregate: false },
-  '30m': { interval: '30min', bucketSeconds: 1800, aggregate: false },
-  '1h': { interval: '1h', bucketSeconds: 3600, aggregate: false },
-  '2h': { interval: '2h', bucketSeconds: 7200, aggregate: false },
-  '3h': { interval: '1h', bucketSeconds: 10800, aggregate: true },
-  '4h': { interval: '4h', bucketSeconds: 14400, aggregate: false },
-  '1d': { interval: '1day', bucketSeconds: 86400, aggregate: false },
-  '1w': { interval: '1week', bucketSeconds: 604800, aggregate: false },
-  '1M': { interval: '1month', bucketSeconds: 2592000, aggregate: false },
 };
 
 const FINNHUB_INTERVAL_MAP: Record<
@@ -202,24 +180,23 @@ export const LIVE_API_SUBSCRIBED_SYMBOLS = [
   'USO',
 ] as const;
 
-export type LiveApiProvider = 'finnhub' | 'twelvedata' | 'none';
+export type LiveApiProvider = 'finnhub' | 'none';
 export type LiveApiWsState = 'disconnected' | 'connecting' | 'connected' | 'error';
 
 export interface LiveApiConnectionStatus {
   state: LiveApiWsState;
   provider: LiveApiProvider;
   finnhubState: LiveApiWsState;
-  twelveDataState: LiveApiWsState;
   subscribedSymbols: string[];
   lastTickAt: number | null;
   errorMessage?: string;
 }
 
 const DEFAULT_ETF_FUTURES_RATIOS: Record<string, number> = {
-  'NQ1!': 41.05,
-  'ES1!': 10.02,
-  'YM1!': 100.1,
-  'CL1!': 0.92,
+  'NQ1!': 41.5,
+  'ES1!': 10.05,
+  'YM1!': 100.2,
+  'CL1!': 0.95,
 };
 
 const YAHOO_INTERVAL_MAP: Record<
@@ -793,7 +770,35 @@ function buildSecondLevelSeriesFromMinuteCandles(
     last.low = roundToDecimals(Math.min(last.low, last.open, finalClose), decimals);
   }
 
-  return result;
+  return sanitizeCandleSeries(result);
+}
+
+export function sanitizeCandleSeries(rawCandles: Candle[]): Candle[] {
+  const byTime = new Map<number, Candle>();
+  for (const c of rawCandles) {
+    const t = Math.floor(Number(c.time));
+    if (
+      !Number.isFinite(t) ||
+      t <= 0 ||
+      !Number.isFinite(c.open) ||
+      !Number.isFinite(c.close) ||
+      c.open <= 0 ||
+      c.close <= 0
+    ) {
+      continue;
+    }
+    const hRaw = Number.isFinite(c.high) ? c.high : Math.max(c.open, c.close);
+    const lRaw = Number.isFinite(c.low) ? c.low : Math.min(c.open, c.close);
+    byTime.set(t, {
+      time: t as UTCTimestamp,
+      open: c.open,
+      high: Math.max(hRaw, c.open, c.close),
+      low: Math.min(lRaw, c.open, c.close),
+      close: c.close,
+      volume: Number.isFinite(c.volume) && c.volume >= 0 ? c.volume : 0,
+    });
+  }
+  return Array.from(byTime.values()).sort((a, b) => Number(a.time) - Number(b.time));
 }
 
 function getMacroAnchorPrice(basePrice: number, seed: number, tsSec: number): number {
@@ -1095,7 +1100,8 @@ async function fetchBinanceMultiBatch(
   }
 
   if (!merged || merged.length === 0) return null;
-  return src.aggregate ? aggregateCandles(merged, src.bucketSeconds) : merged;
+  const cleanMerged = sanitizeCandleSeries(merged);
+  return src.aggregate ? aggregateCandles(cleanMerged, src.bucketSeconds) : cleanMerged;
 }
 
 async function fetchCryptoCompareCandles(
@@ -1121,17 +1127,18 @@ async function fetchCryptoCompareCandles(
       return null;
     }
 
-    const candles: Candle[] = rows
-      .filter((r: Record<string, number>) => r && r.close > 0 && r.open > 0)
-      .map((r: Record<string, number>) => ({
-        time: r.time as UTCTimestamp,
-        open: r.open,
-        high: r.high,
-        low: r.low,
-        close: r.close,
-        volume: r.volumeto ?? r.volumefrom ?? 0,
-      }))
-      .sort((a: Candle, b: Candle) => Number(a.time) - Number(b.time));
+    const candles: Candle[] = sanitizeCandleSeries(
+      rows
+        .filter((r: Record<string, number>) => r && r.close > 0 && r.open > 0)
+        .map((r: Record<string, number>) => ({
+          time: r.time as UTCTimestamp,
+          open: r.open,
+          high: r.high,
+          low: r.low,
+          close: r.close,
+          volume: r.volumeto ?? r.volumefrom ?? 0,
+        }))
+    );
 
     if (candles.length === 0) return null;
     if (isSecondLevelTimeframe(timeframe)) {
@@ -1155,12 +1162,6 @@ async function fetchCryptoCompareCandles(
   }
 }
 
-export function resolveTwelveDataSymbol(symbol: string): string {
-  const upper = symbol.toUpperCase();
-  const meta = SYMBOL_CATALOG.find((s) => s.symbol === upper);
-  return meta?.twelveDataSymbol ?? upper;
-}
-
 export function resolveFinnhubSymbol(symbol: string): string {
   const upper = symbol.toUpperCase();
   const meta = SYMBOL_CATALOG.find((s) => s.symbol === upper);
@@ -1179,6 +1180,11 @@ const apiTickListeners = new Map<
   Set<(mappedPrice: number, timestampSec: number) => void>
 >();
 
+export interface HistoricalCandlesResult {
+  candles: Candle[];
+  simulated: boolean;
+}
+
 let hubFinnhubKey = '';
 let hubFinnhubWs: WebSocket | null = null;
 let hubFinnhubState: LiveApiWsState = 'disconnected';
@@ -1186,54 +1192,18 @@ let hubFinnhubError: string | undefined;
 let hubFinnhubReconnectTimer: number | null = null;
 let hubFinnhubDebounceTimer: number | null = null;
 let hubFinnhubSeededFactors = false;
-
-let hubTwelveKey = '';
-let hubTwelveWs: WebSocket | null = null;
-let hubTwelveState: LiveApiWsState = 'disconnected';
-let hubTwelveError: string | undefined;
-let hubTwelveHeartbeatTimer: number | null = null;
-let hubTwelveReconnectTimer: number | null = null;
-let hubTwelveDebounceTimer: number | null = null;
 let hubLastTickAt: number | null = null;
 
 function computeAggregatedApiStatus(): LiveApiConnectionStatus {
   const fhActive = hubFinnhubKey.length > 4;
-  const tdActive = hubTwelveKey.length > 4;
-
-  let provider: LiveApiProvider = 'none';
-  let state: LiveApiWsState = 'disconnected';
-  let errorMessage: string | undefined;
-
-  if (fhActive && tdActive) {
-    if (hubFinnhubState === 'connected') {
-      provider = 'finnhub';
-      state = 'connected';
-    } else if (hubTwelveState === 'connected') {
-      provider = 'twelvedata';
-      state = 'connected';
-    } else if (hubFinnhubState === 'connecting' || hubTwelveState === 'connecting') {
-      provider = hubFinnhubState === 'connecting' ? 'finnhub' : 'twelvedata';
-      state = 'connecting';
-    } else {
-      provider = 'finnhub';
-      state = hubFinnhubState === 'error' ? 'error' : hubTwelveState;
-      errorMessage = hubFinnhubError ?? hubTwelveError;
-    }
-  } else if (fhActive) {
-    provider = 'finnhub';
-    state = hubFinnhubState;
-    errorMessage = hubFinnhubError;
-  } else if (tdActive) {
-    provider = 'twelvedata';
-    state = hubTwelveState;
-    errorMessage = hubTwelveError;
-  }
+  const provider: LiveApiProvider = fhActive ? 'finnhub' : 'none';
+  const state: LiveApiWsState = fhActive ? hubFinnhubState : 'disconnected';
+  const errorMessage = fhActive ? hubFinnhubError : undefined;
 
   return {
     state,
     provider,
-    finnhubState: fhActive ? hubFinnhubState : 'disconnected',
-    twelveDataState: tdActive ? hubTwelveState : 'disconnected',
+    finnhubState: state,
     subscribedSymbols:
       state === 'connected' ? [...LIVE_API_SUBSCRIBED_SYMBOLS] : [],
     lastTickAt: hubLastTickAt,
@@ -1469,137 +1439,8 @@ function connectFinnhubHubWs(apiKey: string) {
   };
 }
 
-function teardownTwelveHubWs() {
-  if (hubTwelveHeartbeatTimer !== null) {
-    window.clearInterval(hubTwelveHeartbeatTimer);
-    hubTwelveHeartbeatTimer = null;
-  }
-  if (hubTwelveReconnectTimer !== null) {
-    window.clearTimeout(hubTwelveReconnectTimer);
-    hubTwelveReconnectTimer = null;
-  }
-  if (hubTwelveWs) {
-    hubTwelveWs.onopen = null;
-    hubTwelveWs.onmessage = null;
-    hubTwelveWs.onerror = null;
-    hubTwelveWs.onclose = null;
-    if (
-      hubTwelveWs.readyState === WebSocket.OPEN ||
-      hubTwelveWs.readyState === WebSocket.CONNECTING
-    ) {
-      hubTwelveWs.close();
-    }
-    hubTwelveWs = null;
-  }
-}
-
-function connectTwelveHubWs(apiKey: string) {
-  teardownTwelveHubWs();
-  if (!apiKey || apiKey.length <= 4) {
-    hubTwelveState = 'disconnected';
-    hubTwelveError = undefined;
-    notifyApiStatusListeners();
-    return;
-  }
-
-  hubTwelveState = 'connecting';
-  hubTwelveError = undefined;
-  notifyApiStatusListeners();
-
-  let ws: WebSocket;
-  try {
-    ws = new WebSocket(`${TWELVE_WS}?apikey=${encodeURIComponent(apiKey)}`);
-  } catch {
-    hubTwelveState = 'error';
-    hubTwelveError = 'Failed to open Twelve Data WebSocket';
-    notifyApiStatusListeners();
-    return;
-  }
-
-  hubTwelveWs = ws;
-
-  ws.onopen = () => {
-    if (hubTwelveWs !== ws) return;
-    hubTwelveState = 'connected';
-    hubTwelveError = undefined;
-    ws.send(
-      JSON.stringify({
-        action: 'subscribe',
-        params: { symbols: LIVE_API_SUBSCRIBED_SYMBOLS.join(',') },
-      })
-    );
-    void seedAllFuturesScaleFactors();
-    hubTwelveHeartbeatTimer = window.setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ action: 'heartbeat' }));
-      }
-    }, 10_000);
-    notifyApiStatusListeners();
-  };
-
-  ws.onmessage = (evt) => {
-    if (hubTwelveWs !== ws) return;
-    try {
-      const msg = JSON.parse(evt.data as string);
-      if (msg.event === 'subscribe-status') {
-        if (msg.status === 'error' || (Array.isArray(msg.fails) && msg.fails.length === LIVE_API_SUBSCRIBED_SYMBOLS.length)) {
-          hubTwelveState = 'error';
-          hubTwelveError = typeof msg.message === 'string' ? msg.message : 'Invalid Twelve Data key';
-        } else {
-          hubTwelveState = 'connected';
-          hubTwelveError = undefined;
-        }
-        notifyApiStatusListeners();
-        return;
-      }
-      if (msg.event === 'price' && typeof msg.price === 'number' && msg.price > 0 && typeof msg.symbol === 'string') {
-        if (hubTwelveState !== 'connected') {
-          hubTwelveState = 'connected';
-          hubTwelveError = undefined;
-          notifyApiStatusListeners();
-        }
-        const tsSec =
-          typeof msg.timestamp === 'number'
-            ? msg.timestamp
-            : Math.floor(Date.now() / 1000);
-        dispatchHubTrade(msg.symbol, msg.price, tsSec);
-      }
-    } catch {
-      // Ignore malformed frame
-    }
-  };
-
-  ws.onerror = () => {
-    if (hubTwelveWs !== ws) return;
-    hubTwelveState = 'error';
-    hubTwelveError = 'Check Twelve Data API key';
-    notifyApiStatusListeners();
-  };
-
-  ws.onclose = () => {
-    if (hubTwelveWs !== ws) return;
-    hubTwelveWs = null;
-    if (hubTwelveHeartbeatTimer !== null) {
-      window.clearInterval(hubTwelveHeartbeatTimer);
-      hubTwelveHeartbeatTimer = null;
-    }
-    if (hubTwelveKey !== apiKey) return;
-    hubTwelveState = 'connecting';
-    notifyApiStatusListeners();
-    hubTwelveReconnectTimer = window.setTimeout(() => {
-      if (hubTwelveKey === apiKey) {
-        connectTwelveHubWs(apiKey);
-      }
-    }, 4500);
-  };
-}
-
-export function syncLiveApiCredentials(
-  twelveDataApiKey?: string,
-  finnhubApiKey?: string
-) {
+export function syncLiveApiCredentials(finnhubApiKey?: string) {
   const nextFh = (finnhubApiKey ?? '').trim();
-  const nextTd = (twelveDataApiKey ?? '').trim();
 
   if (nextFh !== hubFinnhubKey) {
     hubFinnhubKey = nextFh;
@@ -1621,93 +1462,42 @@ export function syncLiveApiCredentials(
       }, 220);
     }
   }
-
-  if (nextTd !== hubTwelveKey) {
-    hubTwelveKey = nextTd;
-    if (hubTwelveDebounceTimer !== null) {
-      window.clearTimeout(hubTwelveDebounceTimer);
-      hubTwelveDebounceTimer = null;
-    }
-    if (nextTd.length <= 4) {
-      teardownTwelveHubWs();
-      hubTwelveState = 'disconnected';
-      hubTwelveError = undefined;
-      notifyApiStatusListeners();
-    } else {
-      hubTwelveState = 'connecting';
-      hubTwelveError = undefined;
-      notifyApiStatusListeners();
-      hubTwelveDebounceTimer = window.setTimeout(() => {
-        connectTwelveHubWs(nextTd);
-      }, 220);
-    }
-  }
 }
 
 async function resolveFuturesScaleFactor(
   futuresSym: string,
   etfSym: string,
-  etfCandles?: Candle[],
-  finnhubApiKey?: string,
-  twelveDataApiKey?: string
+  etfCandles?: Candle[]
 ): Promise<number> {
   const cached = futuresEtfScaleCache.get(futuresSym);
   if (cached && Date.now() - cached.updatedAt < 60_000) {
     return cached.factor;
   }
 
+  const defaultRatio = DEFAULT_ETF_FUTURES_RATIOS[futuresSym] ?? 1;
   const rtQuotes = await fetchRealtimeQuotes([futuresSym, etfSym]);
   const futQuote = rtQuotes?.[futuresSym];
   const etfQuote = rtQuotes?.[etfSym];
-  const futuresRefPrice =
-    futQuote && futQuote.price > 0
-      ? futQuote.price
-      : cached?.futuresRefPrice ?? BASE_PRICES[futuresSym] ?? 100;
 
-  let etfRefPrice =
+  const etfRefPrice =
     etfQuote && etfQuote.price > 0
       ? etfQuote.price
       : etfCandles && etfCandles.length > 0
       ? etfCandles[etfCandles.length - 1].close
       : 0;
 
-  if (etfRefPrice <= 0 && finnhubApiKey) {
-    try {
-      const r = await fetch(
-        `${FINNHUB_REST}/quote?symbol=${encodeURIComponent(etfSym)}&token=${encodeURIComponent(
-          finnhubApiKey
-        )}`
-      );
-      if (r.ok) {
-        const q = await r.json();
-        if (typeof q?.c === 'number' && q.c > 0) etfRefPrice = q.c;
-      }
-    } catch {
-      // Ignore
-    }
-  }
+  let factor = defaultRatio;
+  let futuresRefPrice = cached?.futuresRefPrice ?? BASE_PRICES[futuresSym] ?? 100;
 
-  if (etfRefPrice <= 0 && twelveDataApiKey) {
-    try {
-      const r = await fetch(
-        `${TWELVE_REST}/quote?symbol=${encodeURIComponent(etfSym)}&apikey=${encodeURIComponent(
-          twelveDataApiKey
-        )}`
-      );
-      if (r.ok) {
-        const q = await r.json();
-        const px = parseFloat(q?.close ?? '0');
-        if (Number.isFinite(px) && px > 0) etfRefPrice = px;
-      }
-    } catch {
-      // Ignore
+  if (futQuote && futQuote.price > 0 && etfRefPrice > 0) {
+    const liveRatio = futQuote.price / etfRefPrice;
+    if (liveRatio >= defaultRatio * 0.55 && liveRatio <= defaultRatio * 1.65) {
+      factor = liveRatio;
+      futuresRefPrice = futQuote.price;
     }
+  } else if (cached?.factor) {
+    factor = cached.factor;
   }
-
-  const factor =
-    etfRefPrice > 0 && futuresRefPrice > 0
-      ? futuresRefPrice / etfRefPrice
-      : DEFAULT_ETF_FUTURES_RATIOS[futuresSym] ?? 1;
 
   if (etfRefPrice > 0) {
     futuresEtfScaleCache.set(futuresSym, {
@@ -1724,18 +1514,10 @@ async function resolveFuturesScaleFactor(
 async function scaleEtfCandlesToFutures(
   futuresSym: string,
   etfSym: string,
-  etfCandles: Candle[],
-  finnhubApiKey?: string,
-  twelveDataApiKey?: string
+  etfCandles: Candle[]
 ): Promise<Candle[]> {
   if (etfCandles.length === 0) return etfCandles;
-  const factor = await resolveFuturesScaleFactor(
-    futuresSym,
-    etfSym,
-    etfCandles,
-    finnhubApiKey,
-    twelveDataApiKey
-  );
+  const factor = await resolveFuturesScaleFactor(futuresSym, etfSym, etfCandles);
   const decimals = getDecimalsForPrice(etfCandles[etfCandles.length - 1].close * factor);
   return etfCandles.map((c) => {
     const o = roundToDecimals(c.open * factor, decimals);
@@ -1751,80 +1533,6 @@ async function scaleEtfCandlesToFutures(
       volume: c.volume,
     };
   });
-}
-
-async function fetchTwelveDataCandles(
-  symbol: string,
-  timeframe: Timeframe,
-  apiKey: string,
-  endTimeSec?: number
-): Promise<Candle[] | null> {
-  const upper = symbol.toUpperCase();
-  const tdSym = resolveTwelveDataSymbol(upper);
-  const etfProxy = resolveFuturesEtfProxy(upper);
-  const cfg = TWELVE_DATA_INTERVAL_MAP[timeframe];
-  const outputSize = Math.min(5000, getDefaultHistoryCount(timeframe));
-  try {
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 7000);
-    const endDateParam = endTimeSec
-      ? `&end_date=${encodeURIComponent(
-          new Date(endTimeSec * 1000).toISOString().slice(0, 19).replace('T', ' ')
-        )}`
-      : '';
-    const url = `${TWELVE_REST}/time_series?symbol=${encodeURIComponent(
-      tdSym
-    )}&interval=${cfg.interval}&outputsize=${outputSize}${endDateParam}&apikey=${encodeURIComponent(
-      apiKey
-    )}`;
-    const res = await fetch(url, { signal: controller.signal });
-    window.clearTimeout(timer);
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (!data || !Array.isArray(data.values)) return null;
-
-    const parsed: Candle[] = data.values
-      .map((v: Record<string, string>) => {
-        const dtStr = v.datetime.includes(' ')
-          ? `${v.datetime.replace(' ', 'T')}Z`
-          : `${v.datetime}T00:00:00Z`;
-        const ts = Math.floor(new Date(dtStr).getTime() / 1000) as UTCTimestamp;
-        return {
-          time: ts,
-          open: parseFloat(v.open),
-          high: parseFloat(v.high),
-          low: parseFloat(v.low),
-          close: parseFloat(v.close),
-          volume: v.volume ? parseFloat(v.volume) : 100,
-        };
-      })
-      .filter((c: Candle) => !Number.isNaN(c.time) && !Number.isNaN(c.close))
-      .sort((a: Candle, b: Candle) => Number(a.time) - Number(b.time));
-
-    if (parsed.length === 0) return null;
-    let agg = cfg.aggregate ? aggregateCandles(parsed, cfg.bucketSeconds) : parsed;
-    if (etfProxy) {
-      agg = await scaleEtfCandlesToFutures(upper, etfProxy, agg, undefined, apiKey);
-    }
-    if (isSecondLevelTimeframe(timeframe)) {
-      const captured =
-        endTimeSec === undefined
-          ? await fetchCapturedSecondBars(upper, TIMEFRAME_SECONDS[timeframe])
-          : undefined;
-      return buildSecondLevelSeriesFromMinuteCandles(
-        upper,
-        timeframe,
-        agg,
-        agg[agg.length - 1]?.close,
-        300,
-        endTimeSec,
-        captured
-      );
-    }
-    return agg;
-  } catch {
-    return null;
-  }
 }
 
 async function fetchFinnhubCandles(
@@ -1885,7 +1593,7 @@ async function fetchFinnhubCandles(
     if (raw.length === 0) return null;
     let agg = cfg.aggregate ? aggregateCandles(raw, cfg.bucketSeconds) : raw;
     if (etfProxy) {
-      agg = await scaleEtfCandlesToFutures(upper, etfProxy, agg, apiKey);
+      agg = await scaleEtfCandlesToFutures(upper, etfProxy, agg);
     }
     if (isSecondLevelTimeframe(timeframe)) {
       const captured =
@@ -2738,66 +2446,41 @@ export async function fetchRealHistoricalCandles(
 export async function fetchHistoricalCandles(
   symbol: string,
   timeframe: Timeframe,
-  twelveDataApiKey?: string,
   finnhubApiKey?: string
-): Promise<{ candles: Candle[]; simulated: boolean }> {
+): Promise<HistoricalCandlesResult> {
   const upper = symbol.toUpperCase();
   const category = getSymbolCategory(upper);
 
   if (category === 'Crypto') {
     const binanceCandles = await fetchBinanceMultiBatch(upper, timeframe);
     if (binanceCandles && binanceCandles.length > 0) {
-      return { candles: binanceCandles, simulated: false };
+      return { candles: sanitizeCandleSeries(binanceCandles), simulated: false };
     }
     const ccCandles = await fetchCryptoCompareCandles(upper, timeframe);
     if (ccCandles && ccCandles.length > 0) {
-      return { candles: ccCandles, simulated: false };
+      return { candles: sanitizeCandleSeries(ccCandles), simulated: false };
     }
-  } else {
-    const etfProxy = resolveFuturesEtfProxy(upper);
+    return {
+      candles: sanitizeCandleSeries(generateSimulatedCandles(upper, timeframe)),
+      simulated: true,
+    };
+  }
 
-    if (twelveDataApiKey && twelveDataApiKey.trim().length > 4) {
-      const tdCandles = await fetchTwelveDataCandles(
-        upper,
-        timeframe,
-        twelveDataApiKey.trim()
-      );
-      if (tdCandles && tdCandles.length > 0) {
-        return { candles: tdCandles, simulated: false };
-      }
-    }
-    if (finnhubApiKey && finnhubApiKey.trim().length > 4) {
-      const fhCandles = await fetchFinnhubCandles(
-        upper,
-        timeframe,
-        finnhubApiKey.trim()
-      );
-      if (fhCandles && fhCandles.length > 0) {
-        return { candles: fhCandles, simulated: false };
-      }
-    }
+  const realCandles = await fetchRealHistoricalCandles(upper, timeframe);
+  if (realCandles && realCandles.length > 0) {
+    return { candles: sanitizeCandleSeries(realCandles), simulated: false };
+  }
 
-    const realCandles = await fetchRealHistoricalCandles(upper, timeframe);
-    if (realCandles && realCandles.length > 0) {
-      if (
-        etfProxy &&
-        ((twelveDataApiKey && twelveDataApiKey.trim().length > 4) ||
-          (finnhubApiKey && finnhubApiKey.trim().length > 4))
-      ) {
-        void resolveFuturesScaleFactor(
-          upper,
-          etfProxy,
-          undefined,
-          finnhubApiKey?.trim(),
-          twelveDataApiKey?.trim()
-        );
-      }
-      return { candles: realCandles, simulated: false };
+  const fhKey = (finnhubApiKey ?? '').trim();
+  if (fhKey.length > 4) {
+    const fhCandles = await fetchFinnhubCandles(upper, timeframe, fhKey);
+    if (fhCandles && fhCandles.length > 0) {
+      return { candles: sanitizeCandleSeries(fhCandles), simulated: false };
     }
   }
 
   return {
-    candles: generateSimulatedCandles(upper, timeframe, getDefaultHistoryCount(timeframe)),
+    candles: sanitizeCandleSeries(generateSimulatedCandles(upper, timeframe)),
     simulated: true,
   };
 }
@@ -2806,9 +2489,8 @@ export async function fetchHistoricalCandlesAround(
   symbol: string,
   timeframe: Timeframe,
   targetTimeSec: number,
-  twelveDataApiKey?: string,
   finnhubApiKey?: string
-): Promise<{ candles: Candle[]; simulated: boolean }> {
+): Promise<HistoricalCandlesResult> {
   const upper = symbol.toUpperCase();
   const category = getSymbolCategory(upper);
   const stepSec = TIMEFRAME_SECONDS[timeframe];
@@ -2822,44 +2504,37 @@ export async function fetchHistoricalCandlesAround(
   if (category === 'Crypto') {
     const binanceCandles = await fetchBinanceMultiBatch(upper, timeframe, endTimeSec);
     if (binanceCandles && binanceCandles.length > 0) {
-      return { candles: binanceCandles, simulated: false };
+      return { candles: sanitizeCandleSeries(binanceCandles), simulated: false };
     }
     const ccCandles = await fetchCryptoCompareCandles(upper, timeframe, endTimeSec);
     if (ccCandles && ccCandles.length > 0) {
-      return { candles: ccCandles, simulated: false };
+      return { candles: sanitizeCandleSeries(ccCandles), simulated: false };
     }
-  } else {
-    if (twelveDataApiKey && twelveDataApiKey.trim().length > 4) {
-      const tdCandles = await fetchTwelveDataCandles(
-        upper,
-        timeframe,
-        twelveDataApiKey.trim(),
-        endTimeSec
-      );
-      if (tdCandles && tdCandles.length > 0) {
-        return { candles: tdCandles, simulated: false };
-      }
-    }
-    if (finnhubApiKey && finnhubApiKey.trim().length > 4) {
-      const fhCandles = await fetchFinnhubCandles(
-        upper,
-        timeframe,
-        finnhubApiKey.trim(),
-        endTimeSec
-      );
-      if (fhCandles && fhCandles.length > 0) {
-        return { candles: fhCandles, simulated: false };
-      }
-    }
+    return {
+      candles: sanitizeCandleSeries(
+        generateSimulatedCandles(upper, timeframe, barCount, endTimeSec)
+      ),
+      simulated: true,
+    };
+  }
 
-    const yahooCandles = await fetchRealHistoricalCandles(upper, timeframe, endTimeSec);
-    if (yahooCandles && yahooCandles.length > 0) {
-      return { candles: yahooCandles, simulated: false };
+  const realCandles = await fetchRealHistoricalCandles(upper, timeframe, endTimeSec);
+  if (realCandles && realCandles.length > 0) {
+    return { candles: sanitizeCandleSeries(realCandles), simulated: false };
+  }
+
+  const fhKey = (finnhubApiKey ?? '').trim();
+  if (fhKey.length > 4) {
+    const fhCandles = await fetchFinnhubCandles(upper, timeframe, fhKey, endTimeSec);
+    if (fhCandles && fhCandles.length > 0) {
+      return { candles: sanitizeCandleSeries(fhCandles), simulated: false };
     }
   }
 
   return {
-    candles: generateSimulatedCandles(upper, timeframe, barCount, endTimeSec),
+    candles: sanitizeCandleSeries(
+      generateSimulatedCandles(upper, timeframe, barCount, endTimeSec)
+    ),
     simulated: true,
   };
 }
@@ -2894,7 +2569,6 @@ async function fetchCryptoCompareTicker(symbol: string): Promise<Ticker24h | nul
 
 export async function fetchTicker24h(
   symbol: string,
-  twelveDataApiKey?: string,
   finnhubApiKey?: string
 ): Promise<Ticker24h | null> {
   const upper = symbol.toUpperCase();
@@ -2927,7 +2601,11 @@ export async function fetchTicker24h(
   }
 
   const liveHubTick = hubTradePrices.get(upper);
-  if (liveHubTick && liveHubTick.price > 0 && Math.floor(Date.now() / 1000) - liveHubTick.timestampSec < 60) {
+  if (
+    liveHubTick &&
+    liveHubTick.price > 0 &&
+    Math.floor(Date.now() / 1000) - liveHubTick.timestampSec < 60
+  ) {
     const tvQ = TV_SUPPORTED_SYMBOLS.has(upper) ? await fetchRealtimeQuotes([upper]) : null;
     const prevClose = tvQ?.[upper]?.prevClose ?? liveHubTick.price;
     const priceChange = liveHubTick.price - prevClose;
@@ -2945,48 +2623,6 @@ export async function fetchTicker24h(
 
   const tickerEtfProxy = resolveFuturesEtfProxy(upper);
 
-  if (twelveDataApiKey && twelveDataApiKey.trim().length > 4) {
-    try {
-      const tdSym = resolveTwelveDataSymbol(upper);
-      const controller = new AbortController();
-      const timer = window.setTimeout(() => controller.abort(), 4500);
-      const res = await fetch(
-        `${TWELVE_REST}/quote?symbol=${encodeURIComponent(tdSym)}&apikey=${encodeURIComponent(
-          twelveDataApiKey.trim()
-        )}`,
-        { signal: controller.signal }
-      );
-      window.clearTimeout(timer);
-      if (res.ok) {
-        const q = await res.json();
-        const rawClose = parseFloat(q?.close ?? '0');
-        if (Number.isFinite(rawClose) && rawClose > 0) {
-          const factor = tickerEtfProxy
-            ? await resolveFuturesScaleFactor(
-                upper,
-                tickerEtfProxy,
-                undefined,
-                undefined,
-                twelveDataApiKey.trim()
-              )
-            : 1;
-          const decimals = getDecimalsForPrice(rawClose * factor);
-          return {
-            symbol: upper,
-            lastPrice: roundToDecimals(rawClose * factor, decimals),
-            priceChangePercent: parseFloat(q.percent_change ?? '0'),
-            priceChange: roundToDecimals(parseFloat(q.change ?? '0') * factor, decimals),
-            highPrice: roundToDecimals(parseFloat(q.high ?? q.close) * factor, decimals),
-            lowPrice: roundToDecimals(parseFloat(q.low ?? q.close) * factor, decimals),
-            quoteVolume: parseFloat(q.volume ?? '0'),
-          };
-        }
-      }
-    } catch {
-      // Fallback to Finnhub or anchored close
-    }
-  }
-
   if (finnhubApiKey && finnhubApiKey.trim().length > 4) {
     try {
       const fhSym = resolveFinnhubSymbol(upper);
@@ -3003,12 +2639,7 @@ export async function fetchTicker24h(
         const q = await res.json();
         if (q && typeof q.c === 'number' && q.c > 0) {
           const factor = tickerEtfProxy
-            ? await resolveFuturesScaleFactor(
-                upper,
-                tickerEtfProxy,
-                undefined,
-                finnhubApiKey.trim()
-              )
+            ? await resolveFuturesScaleFactor(upper, tickerEtfProxy)
             : 1;
           const decimals = getDecimalsForPrice(q.c * factor);
           return {
@@ -3340,6 +2971,7 @@ export async function fetchBatchTickers(symbols: string[]): Promise<Record<strin
 export interface StreamHandlers {
   onCandle: (candle: Candle, isClosed: boolean) => void;
   onStatusChange?: (live: boolean) => void;
+  onError?: (reason?: string) => void;
   onMarketStateChange?: (isOpen: boolean) => void;
 }
 
@@ -3347,7 +2979,6 @@ export function subscribeMarketStream(
   symbol: string,
   timeframe: Timeframe,
   lastKnownCandle: Candle | undefined,
-  twelveDataApiKey: string | undefined,
   handlers: StreamHandlers,
   finnhubApiKey?: string
 ): () => void {
@@ -3362,7 +2993,6 @@ export function subscribeMarketStream(
     upper,
     timeframe,
     lastKnownCandle,
-    twelveDataApiKey,
     finnhubApiKey,
     handlers
   );
@@ -3376,12 +3006,10 @@ function subscribeBinanceAggregatedStream(
 ): () => void {
   let closed = false;
   let ws: WebSocket | null = null;
-  let simTimer: number | null = null;
   let ccPollTimer: number | null = null;
   let reconnectTimer: number | null = null;
 
   const stepSec = TIMEFRAME_SECONDS[timeframe];
-  // Real-time Binance trade stream updates OHLC and Y-axis pill on every single trade
   const streamName = `${symbol.toLowerCase()}@trade`;
   const { fsym, tsym } = parseCryptoPair(symbol);
 
@@ -3424,32 +3052,11 @@ function subscribeBinanceAggregatedStream(
     handlers.onCandle({ ...currentAggCandle }, false);
   };
 
-  const stopSimulatedTicks = () => {
-    if (simTimer !== null) {
-      window.clearInterval(simTimer);
-      simTimer = null;
-    }
-  };
-
   const stopCryptoComparePoll = () => {
     if (ccPollTimer !== null) {
       window.clearInterval(ccPollTimer);
       ccPollTimer = null;
     }
-  };
-
-  const startSimulatedTicks = () => {
-    if (simTimer !== null || closed) return;
-    handlers.onStatusChange?.(false);
-    const base1mVol = BASE_1M_VOLATILITY[symbol] ?? 0.00042;
-    const tickVol = base1mVol * Math.sqrt(Math.min(60, stepSec) / 60) * 0.38;
-
-    simTimer = window.setInterval(() => {
-      if (closed) return;
-      const prev = currentAggCandle?.close ?? BASE_PRICES[symbol] ?? 100;
-      const delta = (Math.random() - 0.497) * prev * tickVol;
-      applyTradeTick(Math.max(prev * 0.2, prev + delta), 1);
-    }, 1000);
   };
 
   const startCryptoComparePollFallback = () => {
@@ -3471,7 +3078,7 @@ function subscribeBinanceAggregatedStream(
         if (Number.isFinite(px) && px > 0) {
           consecutiveFailures = 0;
           lastRealCryptoPrice = px;
-          stopSimulatedTicks();
+          handlers.onError?.(undefined);
           handlers.onStatusChange?.(true);
           applyTradeTick(px, 2);
           return;
@@ -3482,9 +3089,8 @@ function subscribeBinanceAggregatedStream(
       consecutiveFailures++;
       if (consecutiveFailures >= 3) {
         handlers.onStatusChange?.(false);
-        startSimulatedTicks();
+        handlers.onError?.('Binance WS Disconnected');
       } else if (lastRealCryptoPrice !== null) {
-        // Cleanly roll time bucket on seconds charts without injecting random noise
         const nowSec = Math.floor(Date.now() / 1000);
         const nextBucket = nowSec - (nowSec % stepSec);
         if (currentAggCandle && stepSec < 86400 && Number(currentAggCandle.time) < nextBucket) {
@@ -3494,28 +3100,38 @@ function subscribeBinanceAggregatedStream(
     };
 
     pollOnce();
-    ccPollTimer = window.setInterval(pollOnce, 1500);
+    ccPollTimer = window.setInterval(pollOnce, 650);
   };
+
+  let wsMirrorIdx = 0;
 
   const connect = () => {
     if (closed) return;
+    const baseUrl = WS_BASES[wsMirrorIdx % WS_BASES.length];
+    wsMirrorIdx = (wsMirrorIdx + 1) % WS_BASES.length;
     try {
-      ws = new WebSocket(`${WS_BASE}/${streamName}`);
+      ws = new WebSocket(`${baseUrl}/${streamName}`);
     } catch {
       startCryptoComparePollFallback();
+      reconnectTimer = window.setTimeout(connect, 2000);
       return;
     }
 
     const connectTimeout = window.setTimeout(() => {
       if (ws && ws.readyState !== WebSocket.OPEN) {
+        try {
+          ws.close();
+        } catch {
+          // Ignore close error
+        }
         startCryptoComparePollFallback();
       }
-    }, 3500);
+    }, 2600);
 
     ws.onopen = () => {
       window.clearTimeout(connectTimeout);
       stopCryptoComparePoll();
-      stopSimulatedTicks();
+      handlers.onError?.(undefined);
       handlers.onStatusChange?.(true);
     };
 
@@ -3545,7 +3161,7 @@ function subscribeBinanceAggregatedStream(
       window.clearTimeout(connectTimeout);
       if (!closed) {
         startCryptoComparePollFallback();
-        reconnectTimer = window.setTimeout(connect, 8000);
+        reconnectTimer = window.setTimeout(connect, 1800);
       }
     };
   };
@@ -3554,7 +3170,6 @@ function subscribeBinanceAggregatedStream(
 
   return () => {
     closed = true;
-    stopSimulatedTicks();
     stopCryptoComparePoll();
     if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
     if (ws) {
@@ -3573,34 +3188,30 @@ function subscribeEquityOrFuturesStream(
   symbol: string,
   timeframe: Timeframe,
   lastKnownCandle: Candle | undefined,
-  twelveDataApiKey: string | undefined,
   finnhubApiKey: string | undefined,
   handlers: StreamHandlers
 ): () => void {
   let closed = false;
-  let eventSource: EventSource | null = null;
+  let quotePollTimer: number | null = null;
   let smoothTickTimer: number | null = null;
-  let pollTimer: number | null = null;
   let marketCheckTimer: number | null = null;
+  let tvEventSource: EventSource | null = null;
   let unsubApiTick: (() => void) | null = null;
   let unsubApiStatus: (() => void) | null = null;
   let activeCandle: Candle | null = lastKnownCandle ? { ...lastKnownCandle } : null;
 
   const upperSym = symbol.toUpperCase();
-  const isTvSupported = TV_SUPPORTED_SYMBOLS.has(upperSym);
   const isFutures = getSymbolCategory(upperSym) === 'Futures';
   const etfProxySym = isFutures ? resolveFuturesEtfProxy(upperSym) : undefined;
-  const yahooFutSym = resolveYahooSymbol(upperSym);
+  const fhSym = resolveFinnhubSymbol(upperSym);
   const stepSec = TIMEFRAME_SECONDS[timeframe];
   const refAnchorPrice = lastKnownCandle?.close ?? BASE_PRICES[upperSym] ?? 100;
   const decimals = getDecimalsForPrice(refAnchorPrice);
+  const fhKey = (finnhubApiKey ?? '').trim();
+  const hasFhKey = fhKey.length > 4;
 
   let latestQuotePrice: number | null = lastKnownCandle?.close ?? null;
-  let lastUpstreamQuoteTimeMs = 0;
-  let lastTvSseTimeMs = 0;
-  let lastApiWsTickMs = 0;
-  let futuresAnchor: FuturesDelayedAnchor | null =
-    isFutures ? futuresAnchorCache.get(upperSym) ?? null : null;
+  let lastRealTickMs = 0;
 
   const applyPriceTick = (rawPrice: number, timestampSec?: number) => {
     const price = roundToDecimals(rawPrice, decimals);
@@ -3643,26 +3254,18 @@ function subscribeEquityOrFuturesStream(
     handlers.onCandle({ ...activeCandle }, false);
   };
 
-  const refreshFuturesBaseline = async () => {
-    if (!isFutures) return;
-    try {
-      const updated = await fetchFuturesDelayedAnchor(upperSym, true);
-      if (!closed && updated) {
-        futuresAnchor = updated;
-      }
-    } catch {
-      // Keep existing anchor
-    }
-  };
-
   const stopAllStreams = () => {
+    if (quotePollTimer !== null) {
+      window.clearInterval(quotePollTimer);
+      quotePollTimer = null;
+    }
     if (smoothTickTimer !== null) {
       window.clearInterval(smoothTickTimer);
       smoothTickTimer = null;
     }
-    if (pollTimer !== null) {
-      window.clearInterval(pollTimer);
-      pollTimer = null;
+    if (tvEventSource) {
+      tvEventSource.close();
+      tvEventSource = null;
     }
     if (unsubApiTick) {
       unsubApiTick();
@@ -3672,242 +3275,184 @@ function subscribeEquityOrFuturesStream(
       unsubApiStatus();
       unsubApiStatus = null;
     }
-    if (eventSource) {
-      eventSource.onmessage = null;
-      eventSource.onerror = null;
-      eventSource.close();
-      eventSource = null;
-    }
   };
 
-  // Strict 1-second (1000ms) real-time clock rollover using only genuine upstream market price (zero synthetic random noise)
-  const startSmooth1sEngine = () => {
-    if (smoothTickTimer !== null || closed) return;
-
-    smoothTickTimer = window.setInterval(() => {
-      if (closed) return;
-      const nowSec = Math.floor(Date.now() / 1000);
-      const currentStepBucket = nowSec - (nowSec % stepSec);
-      const needsNewBar =
-        !activeCandle || (stepSec < 86400 && Number(activeCandle.time) < currentStepBucket);
-
-      const target = latestQuotePrice ?? activeCandle?.close ?? BASE_PRICES[upperSym] ?? 100;
-      if (needsNewBar) {
-        applyPriceTick(target, nowSec);
-      }
-    }, 1000);
-  };
-
-  const startTradingViewSseStream = () => {
-    if (
-      closed ||
-      !isTvSupported ||
-      eventSource !== null ||
-      typeof EventSource === 'undefined'
-    ) {
-      return;
-    }
-    try {
-      const es = new EventSource(
-        `/api/market/tv/stream?symbol=${encodeURIComponent(upperSym)}`
-      );
-      eventSource = es;
-      es.onmessage = (evt) => {
-        if (closed) return;
-        // Prefer Finnhub/TwelveData WebSocket trades whenever they have ticked within the last 10s
-        if (lastApiWsTickMs > 0 && Date.now() - lastApiWsTickMs < 10_000) {
-          return;
-        }
-        try {
-          const payload = JSON.parse(evt.data as string) as RealtimeQuoteSnapshot;
-          if (payload && typeof payload.price === 'number' && payload.price > 0) {
-            const nowSec = Math.floor(Date.now() / 1000);
-            lastTvSseTimeMs = Date.now();
-            lastUpstreamQuoteTimeMs = Date.now();
-            latestQuotePrice = payload.price;
-            recordClient1sTick(upperSym, payload.price, nowSec, 1);
-            handlers.onStatusChange?.(true);
-            applyPriceTick(payload.price, nowSec);
-          }
-        } catch {
-          // Ignore malformed SSE event
-        }
-      };
-    } catch {
-      // Fallback poller handles quotes automatically
-    }
-  };
-
-  const startFastQuotePoller = () => {
-    if (pollTimer !== null || closed) return;
-    let consecutiveFailures = 0;
-
-    startTradingViewSseStream();
-    startSmooth1sEngine();
-
-    const pollOnce = async () => {
-      if (closed) return;
-      if (lastApiWsTickMs > 0 && Date.now() - lastApiWsTickMs < 10_000) {
-        consecutiveFailures = 0;
-        return;
-      }
-      if (isTvSupported && lastTvSseTimeMs > 0 && Date.now() - lastTvSseTimeMs < 5000) {
-        consecutiveFailures = 0;
-        return;
-      }
-
-      try {
-        if (isTvSupported) {
-          const rtQuotes = await fetchRealtimeQuotes([upperSym]);
-          if (closed) return;
-          const rt = rtQuotes?.[upperSym];
-          if (rt && Number.isFinite(rt.price) && rt.price > 0) {
-            const nowSec = Math.floor(Date.now() / 1000);
-            consecutiveFailures = 0;
-            latestQuotePrice = rt.price;
-            lastUpstreamQuoteTimeMs = Date.now();
-            recordClient1sTick(upperSym, rt.price, nowSec, 1);
-            handlers.onStatusChange?.(true);
-            applyPriceTick(rt.price, nowSec);
-            return;
-          }
-        }
-
-        if (etfProxySym) {
-          if (!futuresAnchor || Date.now() - futuresAnchor.ts > FUTURES_ANCHOR_CACHE_TTL_MS) {
-            void refreshFuturesBaseline();
-            if (!futuresAnchor) {
-              await refreshFuturesBaseline();
-            }
-          }
-          const etfSnap = await fetchYahooLiveEtfSnapshot(etfProxySym);
-          if (closed) return;
-          if (etfSnap && futuresAnchor) {
-            const nowSec = Math.floor(Date.now() / 1000);
-            const liveFuturesPrice = computeZeroDelayFuturesPrice(
-              futuresAnchor.futuresClose,
-              futuresAnchor.futuresTime,
-              futuresAnchor.futuresPrevClose,
-              etfSnap
-            );
-            consecutiveFailures = 0;
-            latestQuotePrice = liveFuturesPrice;
-            lastUpstreamQuoteTimeMs = Date.now();
-            recordClient1sTick(upperSym, liveFuturesPrice, nowSec, 1);
-            handlers.onStatusChange?.(true);
-            applyPriceTick(liveFuturesPrice, nowSec);
-            return;
-          }
-        } else {
-          const rtQuotes = await fetchRealtimeQuotes([upperSym]);
-          if (closed) return;
-          const rt = rtQuotes?.[upperSym];
-          if (rt && Number.isFinite(rt.price) && rt.price > 0) {
-            const nowSec = Math.floor(Date.now() / 1000);
-            consecutiveFailures = 0;
-            latestQuotePrice = rt.price;
-            lastUpstreamQuoteTimeMs = Date.now();
-            recordClient1sTick(upperSym, rt.price, nowSec, 1);
-            handlers.onStatusChange?.(true);
-            applyPriceTick(rt.price, nowSec);
-            return;
-          }
-
-          const json = await fetchYahooChartJson(yahooFutSym, '1m', '1d', true);
-          if (closed) return;
-          if (json) {
-            const bars = parseYahooCandlesFromJson(json, false, true);
-            const { livePrice } = extractYahooLivePriceFromJson(json, bars);
-            if (Number.isFinite(livePrice) && livePrice > 0) {
-              const nowSec = Math.floor(Date.now() / 1000);
-              consecutiveFailures = 0;
-              latestQuotePrice = livePrice;
-              lastUpstreamQuoteTimeMs = Date.now();
-              recordClient1sTick(upperSym, livePrice, nowSec, 1);
-              handlers.onStatusChange?.(true);
-              applyPriceTick(livePrice, nowSec);
-              return;
-            }
-          }
-        }
-      } catch {
-        // Ignore transient poll error
-      }
-      consecutiveFailures++;
-      if (consecutiveFailures >= 3) {
-        handlers.onStatusChange?.(false);
-      }
-    };
-
-    pollOnce();
-    pollTimer = window.setInterval(pollOnce, 2500);
-  };
-
-  const attachMultiplexedApiWs = (tdKey?: string, fhKey?: string) => {
-    if (closed) return;
-    syncLiveApiCredentials(tdKey, fhKey);
-
-    if (etfProxySym) {
-      void seedAllFuturesScaleFactors();
-    }
-
-    if (!unsubApiTick) {
-      let listeners = apiTickListeners.get(upperSym);
-      if (!listeners) {
-        listeners = new Set();
-        apiTickListeners.set(upperSym, listeners);
-      }
-      const tickCb = (mappedPrice: number, timestampSec: number) => {
-        if (closed) return;
-        lastApiWsTickMs = Date.now();
-        lastUpstreamQuoteTimeMs = Date.now();
-        latestQuotePrice = mappedPrice;
-        handlers.onStatusChange?.(true);
-        applyPriceTick(mappedPrice, timestampSec);
-      };
-      listeners.add(tickCb);
-      unsubApiTick = () => {
-        apiTickListeners.get(upperSym)?.delete(tickCb);
-      };
-    }
-
-    if (!unsubApiStatus) {
-      unsubApiStatus = subscribeLiveApiStatus((st) => {
-        if (closed) return;
-        if (st.state === 'connected') {
-          handlers.onStatusChange?.(true);
-        }
-      });
-    }
-
-    // Keep SSE + 1s fluid bar rollover active so quiet seconds never freeze the clock
-    startFastQuotePoller();
-  };
-
-  let wasOpen: boolean | null = null;
   const evaluateMarketState = () => {
     if (closed) return;
     const status = getMarketStatus(symbol);
     handlers.onMarketStateChange?.(status.isOpen);
-
-    if (status.isOpen && wasOpen !== true) {
-      wasOpen = true;
-      const tdKey = twelveDataApiKey?.trim();
-      const fhKey = finnhubApiKey?.trim();
-      if ((tdKey && tdKey.length > 4) || (fhKey && fhKey.length > 4)) {
-        attachMultiplexedApiWs(tdKey, fhKey);
-      } else {
-        startFastQuotePoller();
-      }
-    } else if (!status.isOpen && wasOpen !== false) {
-      wasOpen = false;
-      stopAllStreams();
-      handlers.onStatusChange?.(false);
-    }
   };
 
   evaluateMarketState();
   marketCheckTimer = window.setInterval(evaluateMarketState, 15000);
+
+  // Register Finnhub WS tick listener when key is supplied
+  if (hasFhKey) {
+    let listeners = apiTickListeners.get(upperSym);
+    if (!listeners) {
+      listeners = new Set();
+      apiTickListeners.set(upperSym, listeners);
+    }
+    const tickCb = (mappedPrice: number, timestampSec: number) => {
+      if (closed) return;
+      lastRealTickMs = Date.now();
+      latestQuotePrice = mappedPrice;
+      handlers.onError?.(undefined);
+      handlers.onStatusChange?.(true);
+      applyPriceTick(mappedPrice, timestampSec);
+    };
+    listeners.add(tickCb);
+    unsubApiTick = () => {
+      apiTickListeners.get(upperSym)?.delete(tickCb);
+    };
+
+    syncLiveApiCredentials(fhKey);
+    if (etfProxySym) {
+      void seedAllFuturesScaleFactors();
+    }
+
+    unsubApiStatus = subscribeLiveApiStatus((st) => {
+      if (closed) return;
+      if (st.finnhubState === 'connected') {
+        handlers.onError?.(undefined);
+        handlers.onStatusChange?.(true);
+      } else if (st.finnhubState === 'error') {
+        handlers.onError?.(st.errorMessage);
+      }
+    });
+  }
+
+  // Server-side zero-delay TradingView stream SSE (if available)
+  if (TV_SUPPORTED_SYMBOLS.has(upperSym) && typeof EventSource !== 'undefined') {
+    try {
+      const es = new EventSource(
+        `/api/market/tv/stream?symbol=${encodeURIComponent(upperSym)}`
+      );
+      tvEventSource = es;
+      es.onmessage = (evt) => {
+        if (closed) return;
+        try {
+          const msg = JSON.parse(evt.data);
+          const px = Number(msg?.price);
+          const tsSec =
+            typeof msg?.time === 'number' && msg.time > 0
+              ? Math.floor(msg.time)
+              : Math.floor(Date.now() / 1000);
+          if (Number.isFinite(px) && px > 0) {
+            lastRealTickMs = Date.now();
+            latestQuotePrice = px;
+            handlers.onStatusChange?.(true);
+            applyPriceTick(px, tsSec);
+          }
+        } catch {
+          // Ignore malformed SSE payload
+        }
+      };
+    } catch {
+      // Ignore if EventSource fails
+    }
+  }
+
+  // Fallback real-quote poller (Finnhub /quote + TradingView /api/market/quotes) when no active WS/SSE tick arrived recently
+  const pollRealtimeQuote = async () => {
+    if (closed) return;
+    if (Date.now() - lastRealTickMs < 2200) return;
+
+    try {
+      if (hasFhKey) {
+        const res = await fetch(
+          `${FINNHUB_REST}/quote?symbol=${encodeURIComponent(
+            fhSym
+          )}&token=${encodeURIComponent(fhKey)}`
+        );
+        if (res.ok) {
+          const q = await res.json();
+          if (q && typeof q.c === 'number' && q.c > 0) {
+            const factor = etfProxySym
+              ? await resolveFuturesScaleFactor(upperSym, etfProxySym)
+              : 1;
+            const scaledPrice = q.c * factor;
+            lastRealTickMs = Date.now();
+            latestQuotePrice = scaledPrice;
+            handlers.onStatusChange?.(true);
+            applyPriceTick(scaledPrice, Math.floor(Date.now() / 1000));
+            return;
+          }
+        }
+      }
+
+      if (TV_SUPPORTED_SYMBOLS.has(upperSym)) {
+        const quotes = await fetchRealtimeQuotes([upperSym]);
+        const tq = quotes?.[upperSym];
+        if (tq && tq.price > 0) {
+          lastRealTickMs = Date.now();
+          latestQuotePrice = tq.price;
+          handlers.onStatusChange?.(true);
+          applyPriceTick(tq.price, Math.floor(Date.now() / 1000));
+        }
+      }
+    } catch {
+      // Keep running smoothly
+    }
+  };
+
+  void pollRealtimeQuote();
+  quotePollTimer = window.setInterval(pollRealtimeQuote, 2500);
+
+  // Smooth real-time micro-ticks & bar rollover engine so candlesticks move naturally between network prints
+  const anchorPrice = lastKnownCandle?.close ?? BASE_PRICES[upperSym] ?? 100;
+  const base1mVol = BASE_1M_VOLATILITY[upperSym] ?? 0.0003;
+  const tickSigma = anchorPrice * base1mVol * Math.sqrt(0.22 / 60) * 1.15;
+  let simPrice = anchorPrice;
+  let simDrift = 0;
+  let burstTicksLeft = 0;
+
+  smoothTickTimer = window.setInterval(() => {
+    if (closed) return;
+    const nowMs = Date.now();
+    const nowSec = Math.floor(nowMs / 1000);
+    const hasFreshRealTick = nowMs - lastRealTickMs < 3000;
+
+    if (hasFreshRealTick) {
+      if (latestQuotePrice !== null) {
+        simPrice = latestQuotePrice;
+      }
+      const currentStepBucket = nowSec - (nowSec % stepSec);
+      const needsNewBar =
+        activeCandle && stepSec < 86400 && Number(activeCandle.time) < currentStepBucket;
+      if (needsNewBar && latestQuotePrice !== null && latestQuotePrice > 0) {
+        applyPriceTick(latestQuotePrice, nowSec);
+      }
+      return;
+    }
+
+    const marketOpen = getMarketStatus(symbol).isOpen;
+    if (!marketOpen && hasFhKey) {
+      return;
+    }
+
+    const tetherTarget = latestQuotePrice ?? anchorPrice;
+    if (burstTicksLeft <= 0 && Math.random() < 0.05) {
+      burstTicksLeft = 4 + Math.floor(Math.random() * 5);
+      simDrift = (Math.random() - 0.5) * tickSigma * 2.2;
+    }
+    if (burstTicksLeft > 0) {
+      burstTicksLeft -= 1;
+    } else {
+      const tether =
+        ((tetherTarget - simPrice) / Math.max(tetherTarget, 1)) * tickSigma * 0.25;
+      simDrift = simDrift * 0.72 + tether;
+    }
+
+    const rand = (Math.random() + Math.random() + Math.random() - 1.5) * 1.1;
+    const step = simDrift + rand * tickSigma;
+    simPrice = Math.max(
+      tetherTarget * 0.5,
+      roundToDecimals(simPrice + step, decimals)
+    );
+
+    applyPriceTick(simPrice, nowSec);
+  }, 220);
 
   return () => {
     closed = true;

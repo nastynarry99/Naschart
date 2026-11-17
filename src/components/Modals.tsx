@@ -354,7 +354,7 @@ export function IndicatorsModal({
   );
 }
 
-/* 4. SETTINGS GEAR MODAL (Colors, Theme, + Twelve Data API Key) */
+/* 4. SETTINGS GEAR MODAL (Colors, Theme & Finnhub API Key) */
 const CANDLE_COLOR_PRESETS = [
   { name: 'NasChart Blue', up: '#2962ff', down: '#0c3299' },
   { name: 'Classic Emerald / Red', up: '#089981', down: '#f23645' },
@@ -377,7 +377,6 @@ export function SettingsModal({
   onPreviewAlertSound: (sound: AlertSoundOption) => void;
   onClose: () => void;
 }) {
-  const [showKey, setShowKey] = useState(false);
   const [showFinnhubKey, setShowFinnhubKey] = useState(false);
   const [apiStatus, setApiStatus] = useState<LiveApiConnectionStatus>(() =>
     getLiveApiStatus()
@@ -438,27 +437,27 @@ export function SettingsModal({
           </div>
         </div>
 
-        {/* Live Market Data API Keys (Twelve Data & Finnhub) */}
+        {/* Live Market Data API Key (Finnhub) */}
         <div className="space-y-3 rounded-xl border border-[#e0e3eb] bg-[#f8fafd] p-3.5 dark:border-[#2a2e39] dark:bg-[#131722]">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2 text-xs font-bold text-[#131722] dark:text-[#d1d4dc]">
               <KeyRound className="h-3.5 w-3.5 text-[#2962ff]" />
-              <span>Live Data Feeds (Stocks & Futures)</span>
+              <span>Finnhub Live Data Feed (Stocks & Futures)</span>
             </div>
 
             {apiStatus.state === 'connected' && (
               <span
                 className="inline-flex items-center gap-1.5 rounded-full bg-[#089981]/15 px-2.5 py-0.5 text-[11px] font-bold text-[#089981] dark:bg-[#089981]/20 dark:text-[#22c55e]"
-                title={`Subscribed via ${apiStatus.provider === 'finnhub' ? 'Finnhub' : 'Twelve Data'} WebSocket`}
+                title="Subscribed via Finnhub WebSocket"
               >
                 <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#089981] dark:bg-[#22c55e]" />
-                <span>Live API Connected</span>
+                <span>Connected — Live Finnhub WS</span>
               </span>
             )}
             {apiStatus.state === 'connecting' && (
               <span className="inline-flex items-center gap-1.5 rounded-full bg-[#2962ff]/12 px-2.5 py-0.5 text-[11px] font-semibold text-[#2962ff]">
                 <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[#2962ff]" />
-                <span>Connecting WS...</span>
+                <span>Connecting Finnhub WS...</span>
               </span>
             )}
             {apiStatus.state === 'error' && (
@@ -467,41 +466,13 @@ export function SettingsModal({
                 title={apiStatus.errorMessage}
               >
                 <span className="h-1.5 w-1.5 rounded-full bg-[#f23645]" />
-                <span>{apiStatus.errorMessage || 'Check API Key'}</span>
+                <span>{apiStatus.errorMessage || 'Check Finnhub Key'}</span>
               </span>
             )}
           </div>
           <p className="text-[11px] leading-relaxed text-[#787b86]">
-            Crypto streams 24/7 via Binance WebSocket on every trade tick. Paste a Finnhub or Twelve Data API key below to stream real-time WebSocket trades for AAPL, NVDA, TSLA, MSFT, AMZN &amp; zero-delay ETF-backed Futures (QQQ→NQ1!, SPY→ES1!, DIA→YM1!, USO→CL1!).
+            Crypto streams 24/7 via Binance WebSocket. Paste your Finnhub API key below for real-time WebSocket streaming & quotes across Stocks (AAPL, NVDA, TSLA, MSFT, AMZN) and Futures (QQQ→NQ1!, SPY→ES1!, DIA→YM1!, USO→CL1!).
           </p>
-
-          <div>
-            <label className="mb-1 block text-[11px] font-semibold text-[#131722] dark:text-[#d1d4dc]">
-              Twelve Data API Key
-            </label>
-            <div className="flex items-center gap-2">
-              <input
-                type={showKey ? 'text' : 'password'}
-                value={appearance.twelveDataApiKey ?? ''}
-                onChange={(e) =>
-                  onChangeAppearance({
-                    ...appearance,
-                    twelveDataApiKey: e.target.value,
-                  })
-                }
-                placeholder="Paste Twelve Data API key..."
-                className="h-9 flex-1 rounded-lg border border-[#e0e3eb] bg-white px-3 font-mono-tabular text-xs text-[#131722] outline-none focus:border-[#2962ff] dark:border-[#2a2e39] dark:bg-[#1e222d] dark:text-[#d1d4dc]"
-              />
-              <button
-                type="button"
-                onClick={() => setShowKey((v) => !v)}
-                aria-label={showKey ? 'Hide Twelve Data API key' : 'Show Twelve Data API key'}
-                className="flex h-9 w-9 items-center justify-center rounded-lg border border-[#e0e3eb] bg-white text-[#787b86] hover:text-[#131722] dark:border-[#2a2e39] dark:bg-[#1e222d] dark:hover:text-white"
-              >
-                {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            </div>
-          </div>
 
           <div>
             <label className="mb-1 block text-[11px] font-semibold text-[#131722] dark:text-[#d1d4dc]">
@@ -763,7 +734,6 @@ export function SettingsModal({
               ...(appearance.theme === 'dark'
                 ? DEFAULT_DARK_APPEARANCE
                 : DEFAULT_LIGHT_APPEARANCE),
-              twelveDataApiKey: appearance.twelveDataApiKey,
               finnhubApiKey: appearance.finnhubApiKey,
             })
           }
@@ -1178,10 +1148,10 @@ export function MenuModal({
               <Settings className="h-5 w-5 text-[#787b86]" />
               <div>
                 <div className="text-sm font-semibold text-[#131722] dark:text-[#d1d4dc]">
-                  Chart Colors, Theme & Twelve Data Key
+                  Chart Colors, Theme &amp; API Key
                 </div>
                 <div className="text-xs text-[#787b86]">
-                  Customize candles, background, Light/Dark, API key
+                  Customize candles, background, Light/Dark, Finnhub API key
                 </div>
               </div>
             </div>

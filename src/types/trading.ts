@@ -100,7 +100,6 @@ export interface ChartAppearance {
   upWickColor: string;
   downWickColor: string;
   backgroundColor: string;
-  twelveDataApiKey?: string;
   finnhubApiKey?: string;
   showExecutions?: boolean;
 }
@@ -112,7 +111,6 @@ export const DEFAULT_LIGHT_APPEARANCE: ChartAppearance = {
   upWickColor: '#5b9cf6',
   downWickColor: '#0c3299',
   backgroundColor: '#ffffff',
-  twelveDataApiKey: '',
   finnhubApiKey: '',
   showExecutions: true,
 };
@@ -124,7 +122,6 @@ export const DEFAULT_DARK_APPEARANCE: ChartAppearance = {
   upWickColor: '#5b9cf6',
   downWickColor: '#0c3299',
   backgroundColor: '#131722',
-  twelveDataApiKey: '',
   finnhubApiKey: '',
   showExecutions: true,
 };
@@ -752,23 +749,22 @@ export interface SymbolMeta {
   displayName: string;
   category: AssetCategory;
   exchange: string;
-  twelveDataSymbol?: string;
   finnhubSymbol?: string;
 }
 
 export const SYMBOL_CATALOG: SymbolMeta[] = [
   // Futures
-  { symbol: 'NQ1!', displayName: 'E-Mini Nasdaq Futures', category: 'Futures', exchange: 'CME', twelveDataSymbol: 'QQQ', finnhubSymbol: 'QQQ' },
-  { symbol: 'ES1!', displayName: 'E-Mini S&P 500 Futures', category: 'Futures', exchange: 'CME', twelveDataSymbol: 'SPY', finnhubSymbol: 'SPY' },
-  { symbol: 'YM1!', displayName: 'Mini Dow Futures', category: 'Futures', exchange: 'CBOT', twelveDataSymbol: 'DIA', finnhubSymbol: 'DIA' },
-  { symbol: 'CL1!', displayName: 'Crude Oil Futures', category: 'Futures', exchange: 'NYMEX', twelveDataSymbol: 'USO', finnhubSymbol: 'USO' },
+  { symbol: 'NQ1!', displayName: 'E-Mini Nasdaq Futures', category: 'Futures', exchange: 'CME', finnhubSymbol: 'QQQ' },
+  { symbol: 'ES1!', displayName: 'E-Mini S&P 500 Futures', category: 'Futures', exchange: 'CME', finnhubSymbol: 'SPY' },
+  { symbol: 'YM1!', displayName: 'Mini Dow Futures', category: 'Futures', exchange: 'CBOT', finnhubSymbol: 'DIA' },
+  { symbol: 'CL1!', displayName: 'Crude Oil Futures', category: 'Futures', exchange: 'NYMEX', finnhubSymbol: 'USO' },
 
   // Stocks
-  { symbol: 'AAPL', displayName: 'Apple Inc.', category: 'Stocks', exchange: 'NASDAQ', twelveDataSymbol: 'AAPL', finnhubSymbol: 'AAPL' },
-  { symbol: 'NVDA', displayName: 'NVIDIA Corp.', category: 'Stocks', exchange: 'NASDAQ', twelveDataSymbol: 'NVDA', finnhubSymbol: 'NVDA' },
-  { symbol: 'TSLA', displayName: 'Tesla Inc.', category: 'Stocks', exchange: 'NASDAQ', twelveDataSymbol: 'TSLA', finnhubSymbol: 'TSLA' },
-  { symbol: 'MSFT', displayName: 'Microsoft Corp.', category: 'Stocks', exchange: 'NASDAQ', twelveDataSymbol: 'MSFT', finnhubSymbol: 'MSFT' },
-  { symbol: 'AMZN', displayName: 'Amazon.com Inc.', category: 'Stocks', exchange: 'NASDAQ', twelveDataSymbol: 'AMZN', finnhubSymbol: 'AMZN' },
+  { symbol: 'AAPL', displayName: 'Apple Inc.', category: 'Stocks', exchange: 'NASDAQ', finnhubSymbol: 'AAPL' },
+  { symbol: 'NVDA', displayName: 'NVIDIA Corp.', category: 'Stocks', exchange: 'NASDAQ', finnhubSymbol: 'NVDA' },
+  { symbol: 'TSLA', displayName: 'Tesla Inc.', category: 'Stocks', exchange: 'NASDAQ', finnhubSymbol: 'TSLA' },
+  { symbol: 'MSFT', displayName: 'Microsoft Corp.', category: 'Stocks', exchange: 'NASDAQ', finnhubSymbol: 'MSFT' },
+  { symbol: 'AMZN', displayName: 'Amazon.com Inc.', category: 'Stocks', exchange: 'NASDAQ', finnhubSymbol: 'AMZN' },
 
   // Crypto
   { symbol: 'BTCUSDT', displayName: 'Bitcoin / TetherUS', category: 'Crypto', exchange: 'BINANCE' },
