@@ -2470,7 +2470,8 @@ export async function fetchHistoricalCandles(
   }
 
   const fhKey = (finnhubApiKey ?? '').trim();
-  if (fhKey.length > 4) {
+  // Finnhub only supplies ETF proxy candles for futures symbols; never label scaled ETF data as real futures.
+  if (category !== 'Futures' && fhKey.length > 4) {
     const fhCandles = await fetchFinnhubCandles(upper, timeframe, fhKey);
     if (fhCandles && fhCandles.length > 0) {
       return { candles: sanitizeCandleSeries(fhCandles), simulated: false };
@@ -2514,7 +2515,8 @@ export async function fetchHistoricalCandlesAround(
   }
 
   const fhKey = (finnhubApiKey ?? '').trim();
-  if (fhKey.length > 4) {
+  // Finnhub only supplies ETF proxy candles for futures symbols; never label scaled ETF data as real futures.
+  if (category !== 'Futures' && fhKey.length > 4) {
     const fhCandles = await fetchFinnhubCandles(upper, timeframe, fhKey, endTimeSec);
     if (fhCandles && fhCandles.length > 0) {
       return { candles: sanitizeCandleSeries(fhCandles), simulated: false };
