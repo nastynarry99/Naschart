@@ -52,10 +52,11 @@ interface TvSymbolSpec {
 }
 
 const TV_SYMBOL_MAP: Record<string, TvSymbolSpec> = {
-  'NQ1!': { tvSymbol: 'PEPPERSTONE:NAS100', extended: false },
-  'ES1!': { tvSymbol: 'PEPPERSTONE:US500', extended: false },
-  'YM1!': { tvSymbol: 'PEPPERSTONE:US30', extended: false },
-  'CL1!': { tvSymbol: 'TVC:USOIL', extended: false },
+  // Use the actual exchange-listed continuous futures contracts, not cash-index CFDs.
+  'NQ1!': { tvSymbol: 'CME_MINI:NQ1!', extended: false },
+  'ES1!': { tvSymbol: 'CME_MINI:ES1!', extended: false },
+  'YM1!': { tvSymbol: 'CBOT_MINI:YM1!', extended: false },
+  'CL1!': { tvSymbol: 'NYMEX:CL1!', extended: false },
   AAPL: { tvSymbol: 'NASDAQ:AAPL', extended: true },
   NVDA: { tvSymbol: 'NASDAQ:NVDA', extended: true },
   TSLA: { tvSymbol: 'NASDAQ:TSLA', extended: true },
