@@ -2979,9 +2979,6 @@ function subscribeBinanceAggregatedStream(
   let ws: WebSocket | null = null;
   let ccPollTimer: number | null = null;
   let reconnectTimer: number | null = null;
-  let wsWatchdogTimer: number | null = null;
-  let lastWsTickMs = 0;
-  let lastFallbackPrice: number | null = null;
 
   const stepSec = TIMEFRAME_SECONDS[timeframe];
   const streamName = `${symbol.toLowerCase()}@trade`;
@@ -3036,12 +3033,10 @@ function subscribeBinanceAggregatedStream(
   const startCryptoComparePollFallback = () => {
     if (ccPollTimer !== null || closed) return;
     let consecutiveFailures = 0;
+    let lastRealCryptoPrice: number | null = currentAggCandle?.close ?? null;
 
     const pollOnce = async () => {
       if (closed) return;
-      // Prefer actual Binance trade events. Use the quote endpoint only if the
-      // socket has gone quiet, and never manufacture repeated ticks/volume.
-      if (lastWsTickMs > 0 && Date.now() - lastWsTickMs < 6000) return;
       try {
         const res = await fetch(
           `${CRYPTOCOMPARE_REST}/price?fsym=${encodeURIComponent(
@@ -3051,26 +3046,32 @@ function subscribeBinanceAggregatedStream(
         if (!res.ok) throw new Error('CryptoCompare poll failed');
         const data = await res.json();
         const px = Number(data?.[tsym]);
-        if (!Number.isFinite(px) || px <= 0) throw new Error('Invalid crypto quote');
-        consecutiveFailures = 0;
-        handlers.onError?.(undefined);
-        handlers.onStatusChange?.(true);
-        const previous = lastFallbackPrice ?? currentAggCandle?.close ?? null;
-        if (previous === null || Math.abs(px - previous) >= Math.max(1e-10, Math.abs(px) * 1e-8)) {
-          lastFallbackPrice = px;
-          applyTradeTick(px, 0, Math.floor(Date.now() / 1000));
+        if (Number.isFinite(px) && px > 0) {
+          consecutiveFailures = 0;
+          lastRealCryptoPrice = px;
+          handlers.onError?.(undefined);
+          handlers.onStatusChange?.(true);
+          applyTradeTick(px, 2);
+          return;
         }
       } catch {
-        consecutiveFailures++;
-        if (consecutiveFailures >= 3) {
-          handlers.onStatusChange?.(false);
-          handlers.onError?.('Live crypto feed unavailable');
+        // Ignore transient poll failure
+      }
+      consecutiveFailures++;
+      if (consecutiveFailures >= 3) {
+        handlers.onStatusChange?.(false);
+        handlers.onError?.('Binance WS Disconnected');
+      } else if (lastRealCryptoPrice !== null) {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const nextBucket = nowSec - (nowSec % stepSec);
+        if (currentAggCandle && stepSec < 86400 && Number(currentAggCandle.time) < nextBucket) {
+          applyTradeTick(lastRealCryptoPrice, 0.25, nowSec);
         }
       }
     };
 
-    void pollOnce();
-    ccPollTimer = window.setInterval(pollOnce, 2500);
+    pollOnce();
+    ccPollTimer = window.setInterval(pollOnce, 650);
   };
 
   let wsMirrorIdx = 0;
@@ -3100,18 +3101,9 @@ function subscribeBinanceAggregatedStream(
 
     ws.onopen = () => {
       window.clearTimeout(connectTimeout);
-      lastWsTickMs = Date.now();
+      stopCryptoComparePoll();
       handlers.onError?.(undefined);
       handlers.onStatusChange?.(true);
-      // Some mobile networks leave a WebSocket open but stop delivering frames.
-      // Start quote fallback if no genuine trade arrives shortly.
-      if (wsWatchdogTimer !== null) window.clearInterval(wsWatchdogTimer);
-      wsWatchdogTimer = window.setInterval(() => {
-        if (!closed && ws && ws.readyState === WebSocket.OPEN &&
-            Date.now() - lastWsTickMs >= 6000) {
-          startCryptoComparePollFallback();
-        }
-      }, 2000);
     };
 
     ws.onmessage = (event) => {
@@ -3124,11 +3116,6 @@ function subscribeBinanceAggregatedStream(
         const tradeTimeSec =
           typeof payload.T === 'number' ? Math.floor(payload.T / 1000) : undefined;
         if (Number.isFinite(price) && price > 0) {
-          lastWsTickMs = Date.now();
-          stopCryptoComparePoll();
-          lastFallbackPrice = price;
-          handlers.onError?.(undefined);
-          handlers.onStatusChange?.(true);
           applyTradeTick(price, Number.isFinite(qty) ? qty : 0.25, tradeTimeSec);
         }
       } catch {
@@ -3155,7 +3142,6 @@ function subscribeBinanceAggregatedStream(
   return () => {
     closed = true;
     stopCryptoComparePoll();
-    if (wsWatchdogTimer !== null) window.clearInterval(wsWatchdogTimer);
     if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
     if (ws) {
       ws.onopen = null;
