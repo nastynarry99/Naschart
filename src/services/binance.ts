@@ -2257,7 +2257,8 @@ export async function fetchRealHistoricalCandles(
   const category = getSymbolCategory(upper);
   const isIntraday = !['1d', '1w', '1M'].includes(timeframe);
   const isFutures = category === 'Futures';
-  const etfProxy = isFutures ? resolveFuturesEtfProxy(upper) : undefined;
+  // Keep futures candles on the futures contract itself; ETF proxy prices are not futures prints.
+  const etfProxy = isFutures ? undefined : resolveFuturesEtfProxy(upper);
   const isSecondTf = isSecondLevelTimeframe(timeframe);
 
   if (TV_SUPPORTED_SYMBOLS.has(upper)) {
@@ -2586,6 +2587,7 @@ export async function fetchTicker24h(
 
   const liveHubTick = hubTradePrices.get(upper);
   if (
+    category !== 'Futures' &&
     liveHubTick &&
     liveHubTick.price > 0 &&
     Math.floor(Date.now() / 1000) - liveHubTick.timestampSec < 60
@@ -2607,7 +2609,7 @@ export async function fetchTicker24h(
 
   const tickerEtfProxy = resolveFuturesEtfProxy(upper);
 
-  if (finnhubApiKey && finnhubApiKey.trim().length > 4) {
+  if (category !== 'Futures' && finnhubApiKey && finnhubApiKey.trim().length > 4) {
     try {
       const fhSym = resolveFinnhubSymbol(upper);
       const controller = new AbortController();
@@ -2675,7 +2677,7 @@ export async function fetchTicker24h(
     const yahooSym = resolveYahooSymbol(upperSym);
     const etfProxy = resolveFuturesEtfProxy(upperSym);
 
-    if (etfProxy) {
+    if (etfProxy && getSymbolCategory(upperSym) !== 'Futures') {
       const [anchor, etfSnap] = await Promise.all([
         fetchFuturesDelayedAnchor(upperSym),
         fetchYahooLiveEtfSnapshot(
@@ -3176,7 +3178,8 @@ function subscribeEquityOrFuturesStream(
   const refAnchorPrice = lastKnownCandle?.close ?? BASE_PRICES[upperSym] ?? 100;
   const decimals = getDecimalsForPrice(refAnchorPrice);
   const fhKey = (finnhubApiKey ?? '').trim();
-  const hasFhKey = fhKey.length > 4;
+  // Finnhub subscriptions are stocks/ETF proxies, not direct CME futures trades.
+  const hasFhKey = fhKey.length > 4 && !isFutures;
 
   let latestQuotePrice: number | null = lastKnownCandle?.close ?? null;
   let lastRealTickMs = 0;
