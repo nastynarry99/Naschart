@@ -2476,10 +2476,7 @@ export async function fetchHistoricalCandles(
     }
   }
 
-  return {
-    candles: sanitizeCandleSeries(generateSimulatedCandles(upper, timeframe)),
-    simulated: true,
-  };
+  return { candles: [], simulated: true };
 }
 
 export async function fetchHistoricalCandlesAround(
@@ -2523,12 +2520,7 @@ export async function fetchHistoricalCandlesAround(
     }
   }
 
-  return {
-    candles: sanitizeCandleSeries(
-      generateSimulatedCandles(upper, timeframe, barCount, endTimeSec)
-    ),
-    simulated: true,
-  };
+  return { candles: [], simulated: true };
 }
 
 async function fetchCryptoCompareTicker(symbol: string): Promise<Ticker24h | null> {
