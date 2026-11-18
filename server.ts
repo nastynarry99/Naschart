@@ -643,6 +643,55 @@ async function fetchYahooChartFromUpstream(
 async function startServer() {
   const app = express();
   startTradingViewQuoteHub();
+  app.get('/api/market/finnhub/candles', async (req, res) => {
+    const apiKey = String(process.env.FINNHUB_API_KEY ?? '').trim();
+    if (!apiKey) {
+      res.status(503).json({ error: 'Shared Finnhub key is not configured on the server' });
+      return;
+    }
+
+    const symbol = String(req.query.symbol ?? '').trim().toUpperCase();
+    const resolution = String(req.query.resolution ?? '5').trim();
+    const from = String(req.query.from ?? '').trim();
+    const to = String(req.query.to ?? '').trim();
+    if (!/^[A-Z0-9.\-]{1,20}$/.test(symbol) ||
+        !/^(1|5|15|30|60|D|W|M)$/.test(resolution) ||
+        !/^\d{9,12}$/.test(from) || !/^\d{9,12}$/.test(to)) {
+      res.status(400).json({ error: 'Invalid candle request' });
+      return;
+    }
+
+    const cacheKey = `${symbol}:${resolution}:${from}:${to}`;
+    const cached = yahooCache.get('finnhub:' + cacheKey);
+    if (cached && Date.now() - cached.ts < HISTORY_CACHE_TTL_MS) {
+      res.json(cached.payload);
+      return;
+    }
+
+    try {
+      const url = new URL('https://finnhub.io/api/v1/stock/candle');
+      url.searchParams.set('symbol', symbol);
+      url.searchParams.set('resolution', resolution);
+      url.searchParams.set('from', from);
+      url.searchParams.set('to', to);
+      url.searchParams.set('token', apiKey);
+      const upstream = await fetch(url, { signal: AbortSignal.timeout(7000) });
+      if (!upstream.ok) {
+        res.status(502).json({ error: 'Finnhub upstream request failed', status: upstream.status });
+        return;
+      }
+      const payload = await upstream.json();
+      if (!payload || payload.s !== 'ok' || !Array.isArray(payload.t)) {
+        res.status(502).json({ error: 'Finnhub returned no candle data' });
+        return;
+      }
+      yahooCache.set('finnhub:' + cacheKey, { ts: Date.now(), payload });
+      res.json(payload);
+    } catch {
+      res.status(502).json({ error: 'Finnhub candle request timed out or failed' });
+    }
+  });
+
 
   app.get('/api/market/tv/candles', async (req, res) => {
     const rawSymbol = String(req.query.symbol ?? '').trim().toUpperCase();
@@ -929,9 +978,20 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server listening on http://0.0.0.0:${PORT}`);
-  });
+  return app;
 }
 
-startServer();
+let marketAppPromise: Promise<express.Express> | null = null;
+
+export function getMarketApp(): Promise<express.Express> {
+  if (!marketAppPromise) marketAppPromise = startServer();
+  return marketAppPromise;
+}
+
+if (process.env.VERCEL !== '1') {
+  getMarketApp().then((app) => {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Server listening on http://0.0.0.0:${PORT}`);
+    });
+  });
+}
