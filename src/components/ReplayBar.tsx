@@ -3,20 +3,22 @@ import {
   Clock,
   FastForward,
   GripVertical,
-  Lock,
   Pause,
   Play,
-  RefreshCw,
   SkipForward,
+  Timer,
   X,
 } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  TIMEFRAME_GROUPS,
+  REPLAY_STEP_OPTIONS,
+  TIMEFRAME_SECONDS,
   type ReplaySpeed,
   type ReplayState,
+  type ReplayStepTime,
   type Timeframe,
 } from '../types/trading';
+import { getEffectiveReplayStepSeconds } from '../utils/replayEngine';
 
 export interface ReplayJumpRequest {
   deltaSeconds?: number;
@@ -31,8 +33,8 @@ interface ReplayBarProps {
   onStepForward: () => void;
   onJumpForward: (req: ReplayJumpRequest) => void;
   onChangeSpeed: (speed: ReplaySpeed) => void;
-  onChangeTimeframe: (tf: Timeframe) => void;
-  onToggleTimeframeSync: () => void;
+  onChangeStepTime: (stepTime: ReplayStepTime) => void;
+  onToggleSubBar: () => void;
   onExitReplay: () => void;
 }
 
@@ -68,12 +70,12 @@ export function ReplayBar({
   onStepForward,
   onJumpForward,
   onChangeSpeed,
-  onChangeTimeframe,
-  onToggleTimeframeSync,
+  onChangeStepTime,
+  onToggleSubBar,
   onExitReplay,
 }: ReplayBarProps) {
   const [jumpOpen, setJumpOpen] = useState(false);
-  const [tfOpen, setTfOpen] = useState(false);
+  const [stepOpen, setStepOpen] = useState(false);
   const [customAmount, setCustomAmount] = useState('30');
   const [customUnit, setCustomUnit] = useState<'minutes' | 'hours' | 'bars'>('minutes');
   const [dateStr, setDateStr] = useState(() =>
@@ -246,27 +248,36 @@ export function ReplayBar({
   useEffect(() => {
     if (!replay.active || replay.selectingStart) {
       setJumpOpen(false);
-      setTfOpen(false);
+      setStepOpen(false);
     }
   }, [replay.active, replay.selectingStart]);
 
   useEffect(() => {
-    if (!replay.timeframeSync) {
-      setTfOpen(false);
-    }
-  }, [replay.timeframeSync]);
-
-  useEffect(() => {
-    if (jumpOpen && replay.currentTime) {
-      const nextDefault = replay.currentTime + 3600;
+    if (jumpOpen && (replay.replayTimestamp ?? replay.currentTime)) {
+      const baseTs = replay.replayTimestamp ?? replay.currentTime ?? Math.floor(Date.now() / 1000);
+      const nextDefault = baseTs + 3600;
       setDateStr(formatDateInput(nextDefault));
       setTimeStr(formatTimeInput(nextDefault));
     }
-  }, [jumpOpen, replay.currentTime]);
+  }, [jumpOpen, replay.currentTime, replay.replayTimestamp]);
 
   if (!replay.active) return null;
 
-  const atEnd = replay.currentIndex >= replay.totalCandles - 1;
+  const chartBarSec = TIMEFRAME_SECONDS[activeTimeframe];
+  const isFinalBar = replay.totalCandles > 0 && replay.currentIndex >= replay.totalCandles - 1;
+  const isFinalBarComplete =
+    replay.replayTimestamp === undefined ||
+    replay.currentTime === undefined ||
+    replay.replayTimestamp >= replay.currentTime + chartBarSec - 0.5;
+  const atEnd = replay.totalCandles <= 0 || (isFinalBar && isFinalBarComplete);
+
+  const isSubBarActive = replay.subBarEnabled && replay.stepTime !== 'match';
+  const effectiveStepSec = getEffectiveReplayStepSeconds(
+    activeTimeframe,
+    replay.stepTime,
+    replay.subBarEnabled
+  );
+  const stepButtonLabel = isSubBarActive ? replay.stepTime : `Match (${activeTimeframe})`;
 
   const handleCustomSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -319,7 +330,9 @@ export function ReplayBar({
       {replay.selectingStart ? (
         <div className="flex items-center gap-2 px-1 py-0.5 text-xs font-medium text-[#131722] dark:text-[#d1d4dc]">
           <span className="h-2 w-2 rounded-full bg-[#2962ff]" />
-          <span>Tap any candle on the chart to jump to that point</span>
+          <span>
+            Tap any candle on the {activeTimeframe} chart to jump to that point
+          </span>
           <button
             type="button"
             onClick={onExitReplay}
@@ -355,8 +368,16 @@ export function ReplayBar({
             type="button"
             onClick={onStepForward}
             disabled={atEnd || Boolean(replay.syncing)}
-            title="Step Forward (+1 candle)"
-            aria-label="Step Forward one candle"
+            title={
+              isSubBarActive
+                ? `Step Forward (+${replay.stepTime} tick on ${activeTimeframe} chart)`
+                : `Step Forward (+1 full ${activeTimeframe} bar)`
+            }
+            aria-label={
+              isSubBarActive
+                ? `Step Forward by ${replay.stepTime}`
+                : `Step Forward one ${activeTimeframe} bar`
+            }
             className="flex min-h-[34px] items-center gap-1 rounded-lg border border-[#e0e3eb] px-2 text-xs font-medium text-[#131722] transition-colors hover:bg-[#f0f3fa] disabled:opacity-40 dark:border-[#2a2e39] dark:text-[#d1d4dc] dark:hover:bg-[#2a2e39]"
           >
             <SkipForward className="h-3.5 w-3.5" />
@@ -366,7 +387,7 @@ export function ReplayBar({
           <button
             type="button"
             onClick={() => {
-              setTfOpen(false);
+              setStepOpen(false);
               setJumpOpen((v) => !v);
             }}
             disabled={atEnd || Boolean(replay.syncing)}
@@ -382,68 +403,70 @@ export function ReplayBar({
             <span className="hidden md:inline">Forward</span>
           </button>
 
-          {/* Compact Replay Interval Selector (1s through 1M) + Timeframe Lock/Sync Toggle */}
+          {/* Replay Step Time Dropdown (1s, 5s, 15s, 30s, 1m, 5m, Match Chart) + Sub-Bar Toggle */}
           <div className="relative flex items-center gap-1 rounded-lg border border-[#e0e3eb] bg-[#f8fafd] p-0.5 dark:border-[#2a2e39] dark:bg-[#131722]">
             <button
               type="button"
               onClick={() => {
-                if (!replay.timeframeSync) return;
                 setJumpOpen(false);
-                setTfOpen((v) => !v);
+                setStepOpen((v) => !v);
               }}
-              disabled={!replay.timeframeSync || Boolean(replay.syncing)}
+              disabled={Boolean(replay.syncing)}
               title={
-                replay.timeframeSync
-                  ? 'Switch Replay timeframe (dynamically resamples at current timestamp)'
-                  : 'Replay interval locked (toggle Sync ON to switch timeframes)'
+                isSubBarActive
+                  ? `Step Time: ${replay.stepTime} (${effectiveStepSec}s per step · ${activeTimeframe} chart stays fixed)`
+                  : `Step Time: Match Chart (${activeTimeframe} bar per step)`
               }
-              aria-label="Select Replay Timeframe"
-              className={`flex min-h-[28px] items-center gap-1 rounded-md px-2 font-mono-tabular text-xs font-bold transition-colors ${
-                !replay.timeframeSync
-                  ? 'cursor-not-allowed text-[#787b86] opacity-70'
-                  : tfOpen
+              aria-label="Select Replay Step Time"
+              aria-expanded={stepOpen}
+              className={`flex min-h-[28px] items-center gap-1 rounded-md px-2 text-xs font-bold transition-colors ${
+                stepOpen
                   ? 'bg-[#2962ff] text-white'
                   : 'bg-white text-[#131722] shadow-2xs hover:text-[#2962ff] dark:bg-[#2a2e39] dark:text-white'
               }`}
             >
-              {!replay.timeframeSync && <Lock className="h-3 w-3 text-[#f59e0b]" />}
-              <span>{replay.syncing ? '...' : activeTimeframe}</span>
+              <Timer className="h-3 w-3 shrink-0 text-[#2962ff]" />
+              <span className="hidden sm:inline text-[10px] font-semibold opacity-70">
+                Step
+              </span>
+              <span className="font-mono-tabular">{stepButtonLabel}</span>
               <ChevronDown className="h-3 w-3 opacity-75" />
             </button>
 
             <button
               type="button"
               role="switch"
-              aria-checked={replay.timeframeSync}
-              onClick={onToggleTimeframeSync}
+              aria-checked={replay.subBarEnabled}
+              onClick={onToggleSubBar}
               title={
-                replay.timeframeSync
-                  ? 'Timeframe Sync ON: switching timeframes resamples candles at current replay time'
-                  : 'Timeframe Sync OFF: replay bar interval is locked'
+                replay.subBarEnabled
+                  ? `Sub-Bar Stepping ON: advances ${isSubBarActive ? replay.stepTime : activeTimeframe} per step inside ${activeTimeframe} candles`
+                  : `Sub-Bar Stepping OFF: advances 1 full ${activeTimeframe} bar per step`
               }
               aria-label={
-                replay.timeframeSync ? 'Lock Replay Timeframe' : 'Enable Replay Timeframe Sync'
+                replay.subBarEnabled
+                  ? 'Disable Sub-Bar Stepping'
+                  : 'Enable Sub-Bar Stepping'
               }
               className={`flex min-h-[28px] items-center gap-1 rounded-md px-1.5 text-[10px] font-bold transition-colors ${
-                replay.timeframeSync
+                replay.subBarEnabled
                   ? 'bg-[#2962ff]/12 text-[#2962ff] hover:bg-[#2962ff]/20'
                   : 'text-[#787b86] hover:bg-[#e0e3eb]/60 dark:hover:bg-[#2a2e39]'
               }`}
             >
-              <RefreshCw className="h-3 w-3" />
               <span
                 className={`relative inline-flex h-3.5 w-6 shrink-0 items-center rounded-full p-0.5 transition-colors ${
-                  replay.timeframeSync ? 'bg-[#2962ff]' : 'bg-[#b2b5be] dark:bg-[#434651]'
+                  replay.subBarEnabled ? 'bg-[#2962ff]' : 'bg-[#b2b5be] dark:bg-[#434651]'
                 }`}
               >
                 <span
                   className={`h-2.5 w-2.5 rounded-full bg-white shadow transition-transform ${
-                    replay.timeframeSync ? 'translate-x-2.5' : 'translate-x-0'
+                    replay.subBarEnabled ? 'translate-x-2.5' : 'translate-x-0'
                   }`}
                 />
               </span>
               <span className="hidden sm:inline">
-                {replay.timeframeSync ? 'ON' : 'OFF'}
+                {replay.subBarEnabled ? 'Sub ON' : 'Sub OFF'}
               </span>
             </button>
           </div>
@@ -481,57 +504,80 @@ export function ReplayBar({
         </>
       )}
 
-      {/* Replay Interval Selector Popover (All 18 Timeframes: 1s through 1M) */}
-      {tfOpen && !replay.selectingStart && replay.timeframeSync && (
+      {/* Replay Step Time Popover (1s, 5s, 15s, 30s, 1m, 5m, Match Chart) */}
+      {stepOpen && !replay.selectingStart && (
         <div
-          className="absolute bottom-full left-1/2 z-50 mb-2 w-[310px] max-w-[calc(100vw-24px)] -translate-x-1/2 rounded-2xl border border-[#e0e3eb] bg-white p-3.5 shadow-2xl dark:border-[#2a2e39] dark:bg-[#1e222d]"
+          className="absolute bottom-full left-1/2 z-50 mb-2 w-[280px] max-w-[calc(100vw-24px)] -translate-x-1/2 rounded-2xl border border-[#e0e3eb] bg-white p-3.5 shadow-2xl dark:border-[#2a2e39] dark:bg-[#1e222d]"
           onPointerDown={(e) => e.stopPropagation()}
         >
           <div className="mb-2 flex items-center justify-between">
             <div className="flex items-center gap-1.5 text-xs font-bold text-[#131722] dark:text-white">
-              <RefreshCw className="h-3.5 w-3.5 text-[#2962ff]" />
-              <span>Replay Interval (Resample Live)</span>
+              <Timer className="h-3.5 w-3.5 text-[#2962ff]" />
+              <span>Replay Step Time</span>
             </div>
             <button
               type="button"
-              onClick={() => setTfOpen(false)}
-              aria-label="Close timeframe selector"
+              onClick={() => setStepOpen(false)}
+              aria-label="Close step time selector"
               className="flex h-6 w-6 items-center justify-center rounded-md text-[#787b86] hover:bg-[#f0f3fa] dark:hover:bg-[#2a2e39]"
             >
               <X className="h-3.5 w-3.5" />
             </button>
           </div>
 
-          <div className="space-y-2.5">
-            {TIMEFRAME_GROUPS.map((grp) => (
-              <div key={grp.label}>
-                <div className="mb-1 text-[10px] font-bold tracking-wider text-[#787b86] uppercase">
-                  {grp.label}
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {grp.items.map((tf) => {
-                    const isSelected = activeTimeframe === tf;
-                    return (
-                      <button
-                        key={tf}
-                        type="button"
-                        onClick={() => {
-                          onChangeTimeframe(tf);
-                          setTfOpen(false);
-                        }}
-                        className={`min-h-[30px] min-w-[42px] rounded-lg px-2 font-mono-tabular text-xs font-bold transition-colors ${
-                          isSelected
-                            ? 'bg-[#2962ff] text-white'
-                            : 'border border-[#e0e3eb] bg-[#f8fafd] text-[#131722] hover:border-[#2962ff] hover:text-[#2962ff] dark:border-[#2a2e39] dark:bg-[#131722] dark:text-[#d1d4dc]'
-                        }`}
-                      >
-                        {tf}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ))}
+          <p className="mb-2.5 text-[11px] leading-snug text-[#787b86]">
+            Chart stays on{' '}
+            <span className="font-mono-tabular font-bold text-[#131722] dark:text-white">
+              {activeTimeframe}
+            </span>
+            . Each +1 step or Play tick advances the candle clock by the step time below.
+          </p>
+
+          <div className="space-y-1">
+            {REPLAY_STEP_OPTIONS.map((opt) => {
+              const isSelected = replay.stepTime === opt.id;
+              const isLargerThanBar =
+                opt.seconds !== null && opt.seconds > chartBarSec;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  onClick={() => {
+                    onChangeStepTime(opt.id);
+                    setStepOpen(false);
+                  }}
+                  className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-semibold transition-colors ${
+                    isSelected
+                      ? 'bg-[#2962ff] text-white'
+                      : 'border border-[#e0e3eb]/80 bg-[#f8fafd] text-[#131722] hover:border-[#2962ff] hover:text-[#2962ff] dark:border-[#2a2e39] dark:bg-[#131722] dark:text-[#d1d4dc]'
+                  }`}
+                >
+                  <span className="flex items-center gap-2">
+                    <span className="min-w-[42px] text-left font-mono-tabular font-bold">
+                      {opt.id === 'match' ? activeTimeframe : opt.shortLabel}
+                    </span>
+                    <span
+                      className={`text-[11px] font-normal ${
+                        isSelected ? 'text-white/85' : 'text-[#787b86]'
+                      }`}
+                    >
+                      {opt.id === 'match'
+                        ? `Auto / Match Chart (${activeTimeframe})`
+                        : opt.label}
+                    </span>
+                  </span>
+                  {isLargerThanBar && (
+                    <span
+                      className={`text-[10px] ${
+                        isSelected ? 'text-white/80' : 'text-[#787b86]'
+                      }`}
+                    >
+                      multi-bar
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}

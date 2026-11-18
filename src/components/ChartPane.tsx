@@ -71,6 +71,12 @@ import {
   stepOrderQty,
 } from '../utils/paperTrading';
 import type { PaperPosition, PaperTrade } from '../types/trading';
+import {
+  buildForwardDeltaCandle,
+  resolveReplaySliceAtTimestamp,
+  stepReplayTimestampForward,
+  type StepReplayResult,
+} from '../utils/replayEngine';
 import type { ReplayJumpRequest } from './ReplayBar';
 import {
   CrosshairOrderTicketModal,
@@ -98,10 +104,17 @@ export interface ChartPaneHandle {
     range: { from: UTCTimestamp; to: UTCTimestamp } | null,
     centerTime: number | null
   ) => void;
+  advanceReplayStep: (
+    stepSec: number,
+    subBarMode: boolean,
+    currentReplayTs: number | undefined,
+    currentIndex: number
+  ) => StepReplayResult | null;
   jumpReplayForward: (req: ReplayJumpRequest) => {
     skippedCandles: Candle[];
     targetIndex: number;
     targetTime: number;
+    targetReplayTs: number;
     totalCandles: number;
   } | null;
 }
@@ -150,8 +163,18 @@ interface ChartPaneProps {
   onDeleteDrawing: (paneId: string, drawingId: string) => void;
   onPlacementHintChange: (hint: string | null) => void;
   onToolComplete: () => void;
-  onPickReplayIndex: (index: number, total: number, timeSec?: number) => void;
-  onSyncReplay?: (index: number, total: number, timeSec?: number) => void;
+  onPickReplayIndex: (
+    index: number,
+    total: number,
+    timeSec?: number,
+    replayTimestampSec?: number
+  ) => void;
+  onSyncReplay?: (
+    index: number,
+    total: number,
+    timeSec?: number,
+    replayTimestampSec?: number
+  ) => void;
   onReplayTotalChange: (total: number) => void;
   onOpenSymbolModal: () => void;
   onOpenTimeframeModal: () => void;
@@ -358,6 +381,8 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
 
   const [chartReady, setChartReady] = useState(false);
   const [renderedCandles, setRenderedCandles] = useState<Candle[]>([]);
+  const renderedCandlesRef = useRef<Candle[]>([]);
+  renderedCandlesRef.current = renderedCandles;
   const [draftDrawing, setDraftDrawing] = useState<DrawingObject | null>(null);
   const [pendingPoints, setPendingPoints] = useState<ChartPoint[]>([]);
   const [crosshairPixel, setCrosshairPixel] = useState<{ x: number; y: number } | null>(null);
@@ -616,28 +641,84 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
 
       return outCanvas.toDataURL('image/png');
     },
+    advanceReplayStep: (
+      stepSec: number,
+      subBarMode: boolean,
+      currentReplayTs: number | undefined,
+      currentIndex: number
+    ) => {
+      const buffer = fullCandlesRef.current;
+      if (buffer.length === 0) return null;
+      const barStepSec = TIMEFRAME_SECONDS[paneRef.current.timeframe];
+      const res = stepReplayTimestampForward(
+        buffer,
+        barStepSec,
+        currentIndex,
+        currentReplayTs,
+        stepSec,
+        subBarMode
+      );
+      if (!res) return null;
+      if (res.nextIndex > currentIndex) {
+        requestAnimationFrame(() => {
+          if (!chartDisposedRef.current) {
+            try {
+              chartRef.current?.timeScale().scrollToRealTime();
+            } catch {
+              // Ignore if chart disposed
+            }
+          }
+        });
+      }
+      return res;
+    },
     jumpReplayForward: (req: ReplayJumpRequest) => {
       const buffer = fullCandlesRef.current;
-      const currIdx = replayRef.current.currentIndex;
-      if (buffer.length === 0 || currIdx >= buffer.length - 1) return null;
+      if (buffer.length === 0) return null;
+      const barStepSec = TIMEFRAME_SECONDS[paneRef.current.timeframe];
+      const resolved = resolveReplaySliceAtTimestamp(
+        buffer,
+        barStepSec,
+        replayRef.current.currentIndex,
+        replayRef.current.replayTimestamp
+      );
+      const currIdx = resolved ? resolved.index : replayRef.current.currentIndex;
+      const currIncomplete = resolved ? !resolved.isBarComplete : false;
+      if (currIdx >= buffer.length - 1 && !currIncomplete) return null;
 
       let targetIdx = currIdx + 1;
       if (req.deltaBars !== undefined) {
-        targetIdx = currIdx + Math.max(1, Math.round(req.deltaBars));
+        const barsCount = Math.max(1, Math.round(req.deltaBars));
+        targetIdx = currIncomplete ? currIdx + barsCount - 1 : currIdx + barsCount;
       } else {
-        const currTime = Number(buffer[currIdx].time);
+        const baseTs =
+          replayRef.current.replayTimestamp ??
+          Number(buffer[currIdx].time) + barStepSec;
         const targetTs =
           req.targetTimeSec !== undefined
             ? req.targetTimeSec
-            : currTime + Math.max(1, req.deltaSeconds ?? 0);
+            : baseTs + Math.max(1, req.deltaSeconds ?? 0);
         const foundIdx = buffer.findIndex(
-          (bar, idx) => idx > currIdx && Number(bar.time) >= targetTs
+          (bar, idx) =>
+            idx >= (currIncomplete ? currIdx : currIdx + 1) && Number(bar.time) >= targetTs
         );
         targetIdx = foundIdx === -1 ? buffer.length - 1 : foundIdx;
       }
 
-      targetIdx = Math.min(buffer.length - 1, Math.max(currIdx + 1, targetIdx));
-      const skippedCandles = buffer.slice(currIdx + 1, targetIdx + 1);
+      targetIdx = Math.min(
+        buffer.length - 1,
+        Math.max(currIncomplete ? currIdx : currIdx + 1, targetIdx)
+      );
+      const skippedCandles: Candle[] = [];
+      if (currIncomplete && resolved) {
+        skippedCandles.push(buildForwardDeltaCandle(buffer[currIdx], resolved.fraction, 1));
+      }
+      for (let i = currIdx + 1; i <= targetIdx; i++) {
+        skippedCandles.push({ ...buffer[i] });
+      }
+      const targetBarTime = Number(buffer[targetIdx].time);
+      const targetReplayTs = targetBarTime + barStepSec;
+
       requestAnimationFrame(() => {
         if (!chartDisposedRef.current) {
           try {
@@ -651,7 +732,8 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
       return {
         skippedCandles,
         targetIndex: targetIdx,
-        targetTime: Number(buffer[targetIdx].time),
+        targetTime: targetBarTime,
+        targetReplayTs,
         totalCandles: buffer.length,
       };
     },
@@ -661,11 +743,14 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
         isActiveRef.current && replayRef.current.active && !replayRef.current.selectingStart;
 
       if (inReplay) {
-        const sliced = candles.slice(
-          0,
-          Math.min(replayRef.current.currentIndex + 1, candles.length)
+        const slice = resolveReplaySliceAtTimestamp(
+          candles,
+          TIMEFRAME_SECONDS[paneRef.current.timeframe],
+          replayRef.current.currentIndex,
+          replayRef.current.replayTimestamp
         );
-        if (sliced.length === 0) return false;
+        if (!slice) return false;
+        const sliced = [...candles.slice(0, slice.index), slice.displayCandle];
         centerChartOnTimestamp(sliced, targetTimeSec);
         return true;
       }
@@ -1287,8 +1372,9 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
           if (idx === -1) idx = fullCandlesRef.current.length - 1;
           idx = Math.max(5, Math.min(idx, fullCandlesRef.current.length - 1));
           const pickedTime = Number(fullCandlesRef.current[idx].time);
+          const initialReplayTs = pickedTime + TIMEFRAME_SECONDS[paneRef.current.timeframe];
           setReplayHoverTime(null);
-          onPickReplayIndex(idx, fullCandlesRef.current.length, pickedTime);
+          onPickReplayIndex(idx, fullCandlesRef.current.length, pickedTime, initialReplayTs);
         }
         return;
       }
@@ -1511,7 +1597,8 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
     const load = async () => {
       const activeReplayAtStart =
         isActiveRef.current && replayRef.current.active && !replayRef.current.selectingStart;
-      const targetReplayTime = replayRef.current.currentTime;
+      const targetReplayTime =
+        replayRef.current.replayTimestamp ?? replayRef.current.currentTime;
       const stepSec = TIMEFRAME_SECONDS[pane.timeframe];
       const approxHistorySpanSec = getDefaultHistoryCount(pane.timeframe) * stepSec;
       const nowSec = Math.floor(Date.now() / 1000);
@@ -1602,37 +1689,56 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
         const activeReplay =
           isActiveRef.current && replayRef.current.active && !replayRef.current.selectingStart;
         let effectiveReplayIdx = replayRef.current.currentIndex;
+        let displayCandles = candles;
+        let effectiveReplayTs = replayRef.current.replayTimestamp;
+
         if (activeReplay) {
-          const anchorTime = replayRef.current.currentTime;
-          if (anchorTime !== undefined) {
-            let alignedIdx = -1;
-            for (let i = candles.length - 1; i >= 0; i--) {
-              if (Number(candles[i].time) <= anchorTime) {
-                alignedIdx = i;
-                break;
-              }
-            }
-            if (alignedIdx === -1) {
-              alignedIdx = Math.min(5, candles.length - 1);
-            }
-            effectiveReplayIdx = alignedIdx;
-          } else {
-            effectiveReplayIdx = Math.max(
-              0,
-              Math.min(replayRef.current.currentIndex, candles.length - 1)
+          if (effectiveReplayTs !== undefined) {
+            const slice = resolveReplaySliceAtTimestamp(
+              candles,
+              stepSec,
+              replayRef.current.currentIndex,
+              effectiveReplayTs
             );
+            if (slice) {
+              effectiveReplayIdx = slice.index;
+              displayCandles = [...candles.slice(0, slice.index), slice.displayCandle];
+            } else {
+              displayCandles = candles;
+            }
+          } else {
+            const anchorTime = replayRef.current.currentTime;
+            if (anchorTime !== undefined) {
+              let alignedIdx = -1;
+              for (let i = candles.length - 1; i >= 0; i--) {
+                if (Number(candles[i].time) <= anchorTime) {
+                  alignedIdx = i;
+                  break;
+                }
+              }
+              if (alignedIdx === -1) {
+                alignedIdx = Math.min(5, candles.length - 1);
+              }
+              effectiveReplayIdx = alignedIdx;
+            } else {
+              effectiveReplayIdx = Math.max(
+                0,
+                Math.min(replayRef.current.currentIndex, candles.length - 1)
+              );
+            }
+            displayCandles = candles.slice(0, Math.min(effectiveReplayIdx + 1, candles.length));
+            if (displayCandles.length > 0) {
+              effectiveReplayTs = Number(displayCandles[displayCandles.length - 1].time) + stepSec;
+            }
           }
         }
-
-        const displayCandles = activeReplay
-          ? candles.slice(0, Math.min(effectiveReplayIdx + 1, candles.length))
-          : candles;
 
         lastSeriesTimeRef.current =
           displayCandles.length > 0
             ? Number(displayCandles[displayCandles.length - 1].time)
             : 0;
         candleSeriesRef.current.setData(displayCandles);
+        renderedCandlesRef.current = [...displayCandles];
         setRenderedCandles([...displayCandles]);
         syncIndicatorsData(displayCandles);
         const currentBar = displayCandles[displayCandles.length - 1];
@@ -1648,14 +1754,15 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
             onSyncReplayRef.current(
               effectiveReplayIdx,
               candles.length,
-              currentBar ? Number(currentBar.time) : targetReplayTime
+              currentBar ? Number(currentBar.time) : targetReplayTime,
+              effectiveReplayTs
             );
           } else {
             onReplayTotalChange(candles.length);
           }
         }
       } else if (isActiveRef.current && replayRef.current.active && onSyncReplayRef.current) {
-        onSyncReplayRef.current(0, 0, targetReplayTime);
+        onSyncReplayRef.current(0, 0, targetReplayTime, replayRef.current.replayTimestamp);
       }
 
       const isDailyOrHigher = ['1d', '1w', '1M'].includes(pane.timeframe);
@@ -1891,18 +1998,29 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
     const buffer = fullCandlesRef.current;
     if (buffer.length === 0) return;
     const isReplaying = isActive && replay.active && !replay.selectingStart;
-    const sliced = isReplaying ? buffer.slice(0, replay.currentIndex + 1) : buffer;
+    let sliced = buffer;
+    if (isReplaying) {
+      const slice = resolveReplaySliceAtTimestamp(
+        buffer,
+        TIMEFRAME_SECONDS[pane.timeframe],
+        replay.currentIndex,
+        replay.replayTimestamp
+      );
+      sliced = slice ? [...buffer.slice(0, slice.index), slice.displayCandle] : buffer;
+    }
     syncIndicatorsData(sliced);
   }, [
     pane.indicators,
+    pane.timeframe,
     isActive,
     replay.active,
     replay.selectingStart,
     replay.currentIndex,
+    replay.replayTimestamp,
     syncIndicatorsData,
   ]);
 
-  // Apply Bar Replay slice
+  // Apply Bar Replay slice (including live sub-bar candle building)
   useEffect(() => {
     if (loadedSeriesKeyRef.current !== `${pane.symbol}:${pane.timeframe}`) return;
     if (replay.syncing) return;
@@ -1914,22 +2032,43 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
         cancelAnimationFrame(candleAnimRafRef.current);
         candleAnimRafRef.current = null;
       }
-      const endIdx = Math.max(0, Math.min(replay.currentIndex, buffer.length - 1));
-      const sliced = buffer.slice(0, endIdx + 1);
-      lastSeriesTimeRef.current =
-        sliced.length > 0 ? Number(sliced[sliced.length - 1].time) : 0;
-      candleSeriesRef.current.setData(sliced);
+      const barStepSec = TIMEFRAME_SECONDS[pane.timeframe];
+      const slice = resolveReplaySliceAtTimestamp(
+        buffer,
+        barStepSec,
+        replay.currentIndex,
+        replay.replayTimestamp
+      );
+      if (!slice) return;
+      const replayBar = slice.displayCandle;
+      const replayBarTime = Number(replayBar.time);
+      const sliced = [...buffer.slice(0, slice.index), replayBar];
+
+      const canIncrementalUpdate =
+        renderedCandlesRef.current.length === sliced.length &&
+        lastSeriesTimeRef.current === replayBarTime;
+
+      if (canIncrementalUpdate) {
+        try {
+          candleSeriesRef.current.update(replayBar);
+        } catch {
+          candleSeriesRef.current.setData(sliced);
+        }
+      } else {
+        lastSeriesTimeRef.current = replayBarTime;
+        candleSeriesRef.current.setData(sliced);
+      }
+
+      renderedCandlesRef.current = sliced;
       setRenderedCandles(sliced);
       syncIndicatorsData(sliced);
-      const replayBar = sliced[sliced.length - 1];
       setLiveCandle(replayBar);
-      if (replayBar) {
-        onMarketTickRef.current(pane.symbol, replayBar, true);
-      }
+      onMarketTickRef.current(pane.symbol, replayBar, true);
     } else if (!replay.active) {
       lastSeriesTimeRef.current =
         buffer.length > 0 ? Number(buffer[buffer.length - 1].time) : 0;
       candleSeriesRef.current.setData(buffer);
+      renderedCandlesRef.current = [...buffer];
       setRenderedCandles([...buffer]);
       syncIndicatorsData(buffer);
       const liveBar = buffer[buffer.length - 1];
@@ -1945,6 +2084,7 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
     replay.active,
     replay.selectingStart,
     replay.currentIndex,
+    replay.replayTimestamp,
     replay.syncing,
     pane.symbol,
     pane.timeframe,
@@ -2222,9 +2362,25 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
   useEffect(() => {
     const inReplay = isActive && replay.active && !replay.selectingStart;
     const stepSec = TIMEFRAME_SECONDS[pane.timeframe];
+    const isSubBarClockActive =
+      inReplay &&
+      replay.subBarEnabled &&
+      replay.stepTime !== 'match' &&
+      replay.replayTimestamp !== undefined;
 
     const updateTimer = () => {
       if (inReplay) {
+        if (isSubBarClockActive) {
+          const slice = resolveReplaySliceAtTimestamp(
+            fullCandlesRef.current,
+            stepSec,
+            replay.currentIndex,
+            replay.replayTimestamp
+          );
+          const rem = slice ? slice.remainingSec : 0;
+          setCountdownText(formatCountdown(rem));
+          return;
+        }
         const now = performance.now();
         const prog = replayProgressRef.current;
         if (replay.playing) {
@@ -2267,6 +2423,9 @@ export const ChartPane = forwardRef<ChartPaneHandle, ChartPaneProps>(function Ch
     replay.playing,
     replay.speed,
     replay.currentIndex,
+    replay.replayTimestamp,
+    replay.stepTime,
+    replay.subBarEnabled,
     pane.timeframe,
     marketStatus.isOpen,
     simulated,

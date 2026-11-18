@@ -41,6 +41,7 @@ import {
   DEFAULT_PINNED_TOOLS,
   DEFAULT_STARTING_BALANCE,
   DEFAULT_WATCHLIST,
+  TIMEFRAME_SECONDS,
   getLayoutPresetMeta,
   normalizeLegacyLayoutPreset,
   type AlertSoundOption,
@@ -66,6 +67,7 @@ import {
   type PriceAlertCondition,
   type ReplaySpeed,
   type ReplayState,
+  type ReplayStepTime,
   type SymbolContractOverride,
   type Timeframe,
   type TradeMode,
@@ -85,6 +87,7 @@ import {
   type NettingFillInput,
   type NettingFillResult,
 } from './utils/paperTrading';
+import { getEffectiveReplayStepSeconds } from './utils/replayEngine';
 
 const STORAGE_KEYS = {
   appearance: 'tv_mobile_appearance_v2',
@@ -147,7 +150,8 @@ function applyCandleToAccount(
   account: PaperAccountState,
   symbol: string,
   candle: Candle,
-  isReplay: boolean
+  isReplay: boolean,
+  allowSameBarForward = false
 ): {
   nextAccount: PaperAccountState;
   filledCount: number;
@@ -167,10 +171,10 @@ function applyCandleToAccount(
   for (const ord of pendingList) {
     if (ord.symbol !== symbol || ord.mode !== mode) continue;
     const isSubsequentBar = candleTime > ord.createdAtCandleTime;
-    if (isReplay && !isSubsequentBar) continue;
+    if (isReplay && !allowSameBarForward && !isSubsequentBar) continue;
 
-    const checkHigh = isSubsequentBar ? candle.high : candle.close;
-    const checkLow = isSubsequentBar ? candle.low : candle.close;
+    const checkHigh = isSubsequentBar || allowSameBarForward ? candle.high : candle.close;
+    const checkLow = isSubsequentBar || allowSameBarForward ? candle.low : candle.close;
 
     const triggered =
       ord.side === 'long'
@@ -252,13 +256,13 @@ function applyCandleToAccount(
       }
 
       const isSubsequentBar = candleTime > pos.openedAtCandleTime;
-      if (isReplay && !isSubsequentBar) {
+      if (isReplay && !allowSameBarForward && !isSubsequentBar) {
         remaining.push(pos);
         continue;
       }
 
-      const checkHigh = isSubsequentBar ? candle.high : candle.close;
-      const checkLow = isSubsequentBar ? candle.low : candle.close;
+      const checkHigh = isSubsequentBar || allowSameBarForward ? candle.high : candle.close;
+      const checkLow = isSubsequentBar || allowSameBarForward ? candle.low : candle.close;
 
       let exitPrice: number | null = null;
       let exitReason: 'TP' | 'SL' | null = null;
@@ -589,6 +593,9 @@ export default function App() {
     speed: 1,
     currentIndex: 0,
     totalCandles: 0,
+    replayTimestamp: undefined,
+    stepTime: '5s',
+    subBarEnabled: true,
     timeframeSync: true,
   });
 
@@ -825,7 +832,86 @@ export default function App() {
   );
   activePaneSymbolRef.current = activePane.symbol;
 
-  // Bar Replay playback timer
+  const executeReplayStep = useCallback(
+    (stopPlaying: boolean) => {
+      const r = replayRef.current;
+      if (!r.active || r.selectingStart || r.syncing) return;
+      const currentPane =
+        panesRef.current.find((p) => p.id === activePaneId) ?? panesRef.current[0];
+      const stepSec = getEffectiveReplayStepSeconds(
+        currentPane.timeframe,
+        r.stepTime,
+        r.subBarEnabled
+      );
+      const subBarMode = r.subBarEnabled && r.stepTime !== 'match';
+      const res = paneRefs.current[activePaneId]?.advanceReplayStep(
+        stepSec,
+        subBarMode,
+        r.replayTimestamp,
+        r.currentIndex
+      );
+
+      if (!res) {
+        if (!stopPlaying) {
+          setReplay((prev) => ({ ...prev, playing: false }));
+        }
+        return;
+      }
+
+      const nextBarTime = Number(res.displayCandle.time);
+      latestReplayTimeRef.current = res.nextReplayTs;
+
+      const targetSymbol = currentPane.symbol;
+      if (res.evalCandles.length > 0) {
+        let simWorking = replayPaperRef.current;
+        let totalFills = 0;
+        let totalClosed = 0;
+        let lastEvalNotice: { text: string; tone: 'green' | 'red' | 'blue' } | null = null;
+        for (const evalBar of res.evalCandles) {
+          const evalRes = applyCandleToAccount(
+            simWorking,
+            targetSymbol,
+            evalBar,
+            true,
+            true
+          );
+          simWorking = evalRes.nextAccount;
+          totalFills += evalRes.filledCount;
+          totalClosed += evalRes.closedCount;
+          if (evalRes.lastNotice) lastEvalNotice = evalRes.lastNotice;
+        }
+        if (totalFills > 0 || totalClosed > 0) {
+          setReplayPaperAccount((prev) => {
+            let working = prev;
+            for (const evalBar of res.evalCandles) {
+              working = applyCandleToAccount(
+                working,
+                targetSymbol,
+                evalBar,
+                true,
+                true
+              ).nextAccount;
+            }
+            return working;
+          });
+          if (lastEvalNotice) {
+            showNotice(lastEvalNotice.text, lastEvalNotice.tone);
+          }
+        }
+      }
+
+      setReplay((prev) => ({
+        ...prev,
+        playing: stopPlaying ? false : res.atEnd ? false : prev.playing,
+        currentIndex: res.nextIndex,
+        currentTime: nextBarTime,
+        replayTimestamp: res.nextReplayTs,
+      }));
+    },
+    [activePaneId, showNotice]
+  );
+
+  // Bar Replay playback timer (advances replayTimestamp by selected Step Time without changing chart timeframe)
   useEffect(() => {
     if (!replay.active || replay.selectingStart || !replay.playing || replay.syncing) return;
 
@@ -839,17 +925,18 @@ export default function App() {
         : 180;
 
     const timer = window.setInterval(() => {
-      setReplay((prev) => {
-        if (!prev.active || !prev.playing || prev.syncing) return prev;
-        if (prev.currentIndex >= prev.totalCandles - 1) {
-          return { ...prev, playing: false };
-        }
-        return { ...prev, currentIndex: prev.currentIndex + 1 };
-      });
+      executeReplayStep(false);
     }, intervalMs);
 
     return () => window.clearInterval(timer);
-  }, [replay.active, replay.selectingStart, replay.playing, replay.speed, replay.syncing]);
+  }, [
+    replay.active,
+    replay.selectingStart,
+    replay.playing,
+    replay.speed,
+    replay.syncing,
+    executeReplayStep,
+  ]);
 
   const handleSelectPane = useCallback((paneId: string) => {
     setActivePaneId(paneId);
@@ -873,6 +960,7 @@ export default function App() {
         selectingStart: false,
         playing: false,
         currentTime: undefined,
+        replayTimestamp: undefined,
         syncing: false,
       }));
       const symbolDrawings = drawingsBySymbolRef.current[symbol] ?? [];
@@ -893,24 +981,23 @@ export default function App() {
 
   const handleChangeTimeframe = useCallback(
     (timeframe: Timeframe) => {
-      if (
-        replayRef.current.active &&
-        !replayRef.current.selectingStart &&
-        !replayRef.current.timeframeSync
-      ) {
-        showNotice('Replay interval is locked — toggle Sync ON to switch timeframes', 'blue');
-        return;
-      }
       if (activePane.timeframe === timeframe && !layoutSync.interval) return;
       setReplay((prev) => {
         if (!prev.active) return prev;
         if (prev.selectingStart) {
-          return { ...prev, currentTime: undefined, syncing: false };
+          return {
+            ...prev,
+            currentTime: undefined,
+            replayTimestamp: undefined,
+            syncing: false,
+          };
         }
-        const anchoredTime = latestReplayTimeRef.current ?? prev.currentTime;
+        const anchoredTs =
+          prev.replayTimestamp ?? latestReplayTimeRef.current ?? prev.currentTime;
         return {
           ...prev,
-          currentTime: anchoredTime,
+          playing: false,
+          replayTimestamp: anchoredTs,
           syncing: true,
         };
       });
@@ -920,7 +1007,7 @@ export default function App() {
         updateActivePane((p) => ({ ...p, timeframe }));
       }
     },
-    [activePane.timeframe, layoutSync.interval, showNotice, updateActivePane]
+    [activePane.timeframe, layoutSync.interval, updateActivePane]
   );
 
   const handleToggleLayoutSyncOption = useCallback(
@@ -1243,6 +1330,7 @@ export default function App() {
           selectingStart: false,
           playing: false,
           currentTime: undefined,
+          replayTimestamp: undefined,
           syncing: false,
         };
       }
@@ -1252,43 +1340,57 @@ export default function App() {
         selectingStart: true,
         playing: false,
         currentTime: undefined,
+        replayTimestamp: undefined,
         syncing: false,
       };
     });
   }, []);
 
-  const handlePickReplayIndex = useCallback((index: number, total: number, timeSec?: number) => {
-    if (timeSec !== undefined) {
-      latestReplayTimeRef.current = timeSec;
-    }
-    setReplay((prev) => ({
-      ...prev,
-      active: true,
-      selectingStart: false,
-      playing: false,
-      currentIndex: index,
-      totalCandles: total,
-      currentTime: timeSec ?? prev.currentTime,
-      syncing: false,
-    }));
-  }, []);
-
-  const handleSyncReplay = useCallback((index: number, total: number, timeSec?: number) => {
-    const preservedAnchor = replayRef.current.currentTime ?? timeSec;
-    if (preservedAnchor !== undefined) {
-      latestReplayTimeRef.current = preservedAnchor;
-    }
-    setReplay((prev) => {
-      if (!prev.active) return prev;
-      return {
+  const handlePickReplayIndex = useCallback(
+    (index: number, total: number, timeSec?: number, replayTimestampSec?: number) => {
+      const ts = replayTimestampSec ?? timeSec;
+      if (ts !== undefined) {
+        latestReplayTimeRef.current = ts;
+      }
+      setReplay((prev) => ({
         ...prev,
+        active: true,
+        selectingStart: false,
+        playing: false,
         currentIndex: index,
         totalCandles: total,
-        currentTime: prev.currentTime ?? timeSec,
+        currentTime: timeSec ?? prev.currentTime,
+        replayTimestamp: replayTimestampSec ?? prev.replayTimestamp,
         syncing: false,
-      };
-    });
-  }, []);
+      }));
+    },
+    []
+  );
+
+  const handleSyncReplay = useCallback(
+    (index: number, total: number, timeSec?: number, replayTimestampSec?: number) => {
+      const preservedTs =
+        replayRef.current.replayTimestamp ??
+        replayTimestampSec ??
+        replayRef.current.currentTime ??
+        timeSec;
+      if (preservedTs !== undefined) {
+        latestReplayTimeRef.current = preservedTs;
+      }
+      setReplay((prev) => {
+        if (!prev.active) return prev;
+        return {
+          ...prev,
+          currentIndex: index,
+          totalCandles: total,
+          currentTime: timeSec ?? prev.currentTime,
+          replayTimestamp: prev.replayTimestamp ?? replayTimestampSec,
+          syncing: false,
+        };
+      });
+    },
+    []
+  );
 
   const handleReplayTotalChange = useCallback((total: number) => {
     setReplay((prev) => ({ ...prev, totalCandles: total }));
@@ -1297,23 +1399,22 @@ export default function App() {
   const handleToggleReplayPlay = useCallback(() => {
     setReplay((prev) => {
       if (prev.syncing) return prev;
-      if (prev.currentIndex >= prev.totalCandles - 1) {
+      const barSec = TIMEFRAME_SECONDS[activePane.timeframe];
+      const isFinalBar = prev.totalCandles > 0 && prev.currentIndex >= prev.totalCandles - 1;
+      const isFinalComplete =
+        prev.replayTimestamp === undefined ||
+        prev.currentTime === undefined ||
+        prev.replayTimestamp >= prev.currentTime + barSec - 0.5;
+      if (isFinalBar && isFinalComplete) {
         return { ...prev, playing: false };
       }
       return { ...prev, playing: !prev.playing };
     });
-  }, []);
+  }, [activePane.timeframe]);
 
   const handleStepForward = useCallback(() => {
-    setReplay((prev) => {
-      if (prev.syncing) return prev;
-      return {
-        ...prev,
-        playing: false,
-        currentIndex: Math.min(prev.currentIndex + 1, Math.max(0, prev.totalCandles - 1)),
-      };
-    });
-  }, []);
+    executeReplayStep(true);
+  }, [executeReplayStep]);
 
   const handleJumpForwardReplay = useCallback(
     (req: ReplayJumpRequest) => {
@@ -1324,14 +1425,14 @@ export default function App() {
         return;
       }
 
-      latestReplayTimeRef.current = res.targetTime;
+      latestReplayTimeRef.current = res.targetReplayTs;
       const targetSymbol = activePane.symbol;
 
       let totalFills = 0;
       let totalClosed = 0;
       let simWorking = replayPaperRef.current;
       for (const bar of res.skippedCandles) {
-        const evalRes = applyCandleToAccount(simWorking, targetSymbol, bar, true);
+        const evalRes = applyCandleToAccount(simWorking, targetSymbol, bar, true, true);
         simWorking = evalRes.nextAccount;
         totalFills += evalRes.filledCount;
         totalClosed += evalRes.closedCount;
@@ -1341,7 +1442,7 @@ export default function App() {
         setReplayPaperAccount((prev) => {
           let working = prev;
           for (const bar of res.skippedCandles) {
-            working = applyCandleToAccount(working, targetSymbol, bar, true).nextAccount;
+            working = applyCandleToAccount(working, targetSymbol, bar, true, true).nextAccount;
           }
           return working;
         });
@@ -1353,6 +1454,7 @@ export default function App() {
         currentIndex: res.targetIndex,
         totalCandles: res.totalCandles,
         currentTime: res.targetTime,
+        replayTimestamp: res.targetReplayTs,
         syncing: false,
       }));
 
@@ -1376,18 +1478,43 @@ export default function App() {
     setReplay((prev) => ({ ...prev, speed }));
   }, []);
 
-  const handleToggleReplayTimeframeSync = useCallback(() => {
-    setReplay((prev) => {
-      const nextSync = !prev.timeframeSync;
+  const handleChangeReplayStepTime = useCallback(
+    (stepTime: ReplayStepTime) => {
+      setReplay((prev) => {
+        const subBarEnabled = stepTime === 'match' ? prev.subBarEnabled : true;
+        return {
+          ...prev,
+          stepTime,
+          subBarEnabled,
+        };
+      });
       showNotice(
-        nextSync
-          ? 'Replay timeframe sync ON — interval changes resample at current bar'
-          : 'Replay timeframe locked — current step interval preserved',
+        stepTime === 'match'
+          ? `Step Time: Match Chart (${activePane.timeframe} per step)`
+          : `Step Time: ${stepTime} (${activePane.timeframe} chart fixed)`,
         'blue'
       );
-      return { ...prev, timeframeSync: nextSync };
+    },
+    [activePane.timeframe, showNotice]
+  );
+
+  const handleToggleReplaySubBar = useCallback(() => {
+    setReplay((prev) => {
+      const nextSubBar = !prev.subBarEnabled;
+      showNotice(
+        nextSubBar
+          ? `Sub-bar stepping ON (${
+              prev.stepTime === 'match' ? activePane.timeframe : prev.stepTime
+            } per step)`
+          : `Sub-bar stepping OFF (1 full ${activePane.timeframe} bar per step)`,
+        'blue'
+      );
+      return {
+        ...prev,
+        subBarEnabled: nextSubBar,
+      };
     });
-  }, [showNotice]);
+  }, [activePane.timeframe, showNotice]);
 
   const handleExitReplay = useCallback(() => {
     latestReplayTimeRef.current = undefined;
@@ -1402,6 +1529,7 @@ export default function App() {
       selectingStart: false,
       playing: false,
       currentTime: undefined,
+      replayTimestamp: undefined,
       syncing: false,
     }));
   }, []);
@@ -1893,9 +2021,6 @@ export default function App() {
     (symbol: string, candle: Candle, isReplay: boolean) => {
       livePricesRef.current[symbol] = candle.close;
       latestCandleTimesRef.current[symbol] = Number(candle.time);
-      if (isReplay && symbol === activePaneSymbolRef.current && !replayRef.current.syncing) {
-        latestReplayTimeRef.current = Number(candle.time);
-      }
       setLivePrices((prev) =>
         prev[symbol] === candle.close ? prev : { ...prev, [symbol]: candle.close }
       );
@@ -1979,14 +2104,17 @@ export default function App() {
         }
       }
 
-      const snapshot = isReplay ? replayPaperRef.current : livePaperRef.current;
-      const setTargetAccount = isReplay ? setReplayPaperAccount : setLivePaperAccount;
-      const evalPreview = applyCandleToAccount(snapshot, symbol, candle, isReplay);
+      if (!isReplay) {
+        const snapshot = livePaperRef.current;
+        const evalPreview = applyCandleToAccount(snapshot, symbol, candle, false, false);
 
-      if (evalPreview.filledCount > 0 || evalPreview.closedCount > 0) {
-        setTargetAccount((prev) => applyCandleToAccount(prev, symbol, candle, isReplay).nextAccount);
-        if (evalPreview.lastNotice) {
-          showNotice(evalPreview.lastNotice.text, evalPreview.lastNotice.tone);
+        if (evalPreview.filledCount > 0 || evalPreview.closedCount > 0) {
+          setLivePaperAccount(
+            (prev) => applyCandleToAccount(prev, symbol, candle, false, false).nextAccount
+          );
+          if (evalPreview.lastNotice) {
+            showNotice(evalPreview.lastNotice.text, evalPreview.lastNotice.tone);
+          }
         }
       }
     },
@@ -2429,8 +2557,8 @@ export default function App() {
               onStepForward={handleStepForward}
               onJumpForward={handleJumpForwardReplay}
               onChangeSpeed={handleChangeReplaySpeed}
-              onChangeTimeframe={handleChangeTimeframe}
-              onToggleTimeframeSync={handleToggleReplayTimeframeSync}
+              onChangeStepTime={handleChangeReplayStepTime}
+              onToggleSubBar={handleToggleReplaySubBar}
               onExitReplay={handleExitReplay}
             />
           </div>

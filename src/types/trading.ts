@@ -727,6 +727,22 @@ export interface PaneConfig {
 }
 
 export type ReplaySpeed = 0.5 | 1 | 2 | 5;
+export type ReplayStepTime = '1s' | '5s' | '15s' | '30s' | '1m' | '5m' | 'match';
+
+export const REPLAY_STEP_OPTIONS: Array<{
+  id: ReplayStepTime;
+  label: string;
+  shortLabel: string;
+  seconds: number | null;
+}> = [
+  { id: '1s', label: '1 second', shortLabel: '1s', seconds: 1 },
+  { id: '5s', label: '5 seconds', shortLabel: '5s', seconds: 5 },
+  { id: '15s', label: '15 seconds', shortLabel: '15s', seconds: 15 },
+  { id: '30s', label: '30 seconds', shortLabel: '30s', seconds: 30 },
+  { id: '1m', label: '1 minute', shortLabel: '1m', seconds: 60 },
+  { id: '5m', label: '5 minutes', shortLabel: '5m', seconds: 300 },
+  { id: 'match', label: 'Auto / Match Chart', shortLabel: 'Match Chart', seconds: null },
+];
 
 export interface ReplayState {
   active: boolean;
@@ -736,6 +752,9 @@ export interface ReplayState {
   currentIndex: number;
   totalCandles: number;
   currentTime?: number;
+  replayTimestamp?: number;
+  stepTime: ReplayStepTime;
+  subBarEnabled: boolean;
   syncing?: boolean;
   timeframeSync: boolean;
 }
