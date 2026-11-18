@@ -2460,10 +2460,7 @@ export async function fetchHistoricalCandles(
     if (ccCandles && ccCandles.length > 0) {
       return { candles: sanitizeCandleSeries(ccCandles), simulated: false };
     }
-    return {
-      candles: sanitizeCandleSeries(generateSimulatedCandles(upper, timeframe)),
-      simulated: true,
-    };
+    return { candles: [], simulated: true };
   }
 
   const realCandles = await fetchRealHistoricalCandles(upper, timeframe);
@@ -2510,12 +2507,7 @@ export async function fetchHistoricalCandlesAround(
     if (ccCandles && ccCandles.length > 0) {
       return { candles: sanitizeCandleSeries(ccCandles), simulated: false };
     }
-    return {
-      candles: sanitizeCandleSeries(
-        generateSimulatedCandles(upper, timeframe, barCount, endTimeSec)
-      ),
-      simulated: true,
-    };
+    return { candles: [], simulated: true };
   }
 
   const realCandles = await fetchRealHistoricalCandles(upper, timeframe, endTimeSec);
@@ -2950,21 +2942,6 @@ export async function fetchBatchTickers(symbols: string[]): Promise<Record<strin
     }
   }
 
-  for (const sym of upper) {
-    if (map[sym]) continue;
-    const base = BASE_PRICES[sym] ?? 100;
-    const pct = ((sym.charCodeAt(0) % 9) - 3.6) * 0.24;
-    map[sym] = {
-      symbol: sym,
-      lastPrice: base,
-      priceChangePercent: pct,
-      priceChange: (base * pct) / 100,
-      highPrice: base * 1.008,
-      lowPrice: base * 0.992,
-      quoteVolume: base * 45000,
-    };
-  }
-
   return map;
 }
 
@@ -3193,7 +3170,6 @@ function subscribeEquityOrFuturesStream(
 ): () => void {
   let closed = false;
   let quotePollTimer: number | null = null;
-  let smoothTickTimer: number | null = null;
   let marketCheckTimer: number | null = null;
   let tvEventSource: EventSource | null = null;
   let unsubApiTick: (() => void) | null = null;
@@ -3258,10 +3234,6 @@ function subscribeEquityOrFuturesStream(
     if (quotePollTimer !== null) {
       window.clearInterval(quotePollTimer);
       quotePollTimer = null;
-    }
-    if (smoothTickTimer !== null) {
-      window.clearInterval(smoothTickTimer);
-      smoothTickTimer = null;
     }
     if (tvEventSource) {
       tvEventSource.close();
@@ -3334,10 +3306,10 @@ function subscribeEquityOrFuturesStream(
         try {
           const msg = JSON.parse(evt.data);
           const px = Number(msg?.price);
-          const tsSec =
-            typeof msg?.time === 'number' && msg.time > 0
-              ? Math.floor(msg.time)
-              : Math.floor(Date.now() / 1000);
+          const tsValue = Number(msg?.timestampSec ?? msg?.time);
+          const tsSec = Number.isFinite(tsValue) && tsValue > 0
+            ? Math.floor(tsValue)
+            : 0;
           if (Number.isFinite(px) && px > 0) {
             lastRealTickMs = Date.now();
             latestQuotePrice = px;
@@ -3372,10 +3344,13 @@ function subscribeEquityOrFuturesStream(
               ? await resolveFuturesScaleFactor(upperSym, etfProxySym)
               : 1;
             const scaledPrice = q.c * factor;
+            const quoteTimeSec = Number(q.t);
+            const nowSec = Math.floor(Date.now() / 1000);
+            if (!Number.isFinite(quoteTimeSec) || quoteTimeSec <= 0 || nowSec - quoteTimeSec > 90) return;
             lastRealTickMs = Date.now();
             latestQuotePrice = scaledPrice;
             handlers.onStatusChange?.(true);
-            applyPriceTick(scaledPrice, Math.floor(Date.now() / 1000));
+            applyPriceTick(scaledPrice, quoteTimeSec);
             return;
           }
         }
@@ -3385,10 +3360,13 @@ function subscribeEquityOrFuturesStream(
         const quotes = await fetchRealtimeQuotes([upperSym]);
         const tq = quotes?.[upperSym];
         if (tq && tq.price > 0) {
-          lastRealTickMs = Date.now();
-          latestQuotePrice = tq.price;
-          handlers.onStatusChange?.(true);
-          applyPriceTick(tq.price, Math.floor(Date.now() / 1000));
+          const quoteTimeSec = Number(tq.timestampSec ?? tq.time);
+          if (Number.isFinite(quoteTimeSec) && quoteTimeSec > 0) {
+            lastRealTickMs = Date.now();
+            latestQuotePrice = tq.price;
+            handlers.onStatusChange?.(true);
+            applyPriceTick(tq.price, Math.floor(quoteTimeSec));
+          }
         }
       }
     } catch {
@@ -3399,60 +3377,6 @@ function subscribeEquityOrFuturesStream(
   void pollRealtimeQuote();
   quotePollTimer = window.setInterval(pollRealtimeQuote, 2500);
 
-  // Smooth real-time micro-ticks & bar rollover engine so candlesticks move naturally between network prints
-  const anchorPrice = lastKnownCandle?.close ?? BASE_PRICES[upperSym] ?? 100;
-  const base1mVol = BASE_1M_VOLATILITY[upperSym] ?? 0.0003;
-  const tickSigma = anchorPrice * base1mVol * Math.sqrt(0.22 / 60) * 1.15;
-  let simPrice = anchorPrice;
-  let simDrift = 0;
-  let burstTicksLeft = 0;
-
-  smoothTickTimer = window.setInterval(() => {
-    if (closed) return;
-    const nowMs = Date.now();
-    const nowSec = Math.floor(nowMs / 1000);
-    const hasFreshRealTick = nowMs - lastRealTickMs < 3000;
-
-    if (hasFreshRealTick) {
-      if (latestQuotePrice !== null) {
-        simPrice = latestQuotePrice;
-      }
-      const currentStepBucket = nowSec - (nowSec % stepSec);
-      const needsNewBar =
-        activeCandle && stepSec < 86400 && Number(activeCandle.time) < currentStepBucket;
-      if (needsNewBar && latestQuotePrice !== null && latestQuotePrice > 0) {
-        applyPriceTick(latestQuotePrice, nowSec);
-      }
-      return;
-    }
-
-    const marketOpen = getMarketStatus(symbol).isOpen;
-    if (!marketOpen && hasFhKey) {
-      return;
-    }
-
-    const tetherTarget = latestQuotePrice ?? anchorPrice;
-    if (burstTicksLeft <= 0 && Math.random() < 0.05) {
-      burstTicksLeft = 4 + Math.floor(Math.random() * 5);
-      simDrift = (Math.random() - 0.5) * tickSigma * 2.2;
-    }
-    if (burstTicksLeft > 0) {
-      burstTicksLeft -= 1;
-    } else {
-      const tether =
-        ((tetherTarget - simPrice) / Math.max(tetherTarget, 1)) * tickSigma * 0.25;
-      simDrift = simDrift * 0.72 + tether;
-    }
-
-    const rand = (Math.random() + Math.random() + Math.random() - 1.5) * 1.1;
-    const step = simDrift + rand * tickSigma;
-    simPrice = Math.max(
-      tetherTarget * 0.5,
-      roundToDecimals(simPrice + step, decimals)
-    );
-
-    applyPriceTick(simPrice, nowSec);
-  }, 220);
 
   return () => {
     closed = true;
