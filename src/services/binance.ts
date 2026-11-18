@@ -1556,12 +1556,15 @@ async function fetchFinnhubCandles(
   try {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), 7000);
-    const url = `${FINNHUB_REST}/stock/candle?symbol=${encodeURIComponent(
-      fhSym
-    )}&resolution=${encodeURIComponent(
-      cfg.resolution
-    )}&from=${fromSec}&to=${toSec}&token=${encodeURIComponent(apiKey)}`;
-    const res = await fetch(url, { signal: controller.signal });
+    const params = new URLSearchParams({
+      symbol: fhSym,
+      resolution: cfg.resolution,
+      from: String(fromSec),
+      to: String(toSec),
+    });
+    const res = await fetch(`/api/market/finnhub/candles?${params.toString()}`, {
+      signal: controller.signal,
+    });
     window.clearTimeout(timer);
     if (!res.ok) return null;
     const data = await res.json();
@@ -2469,10 +2472,9 @@ export async function fetchHistoricalCandles(
     return { candles: sanitizeCandleSeries(realCandles), simulated: false };
   }
 
-  const fhKey = (finnhubApiKey ?? '').trim();
-  // Finnhub only supplies ETF proxy candles for futures symbols; never label scaled ETF data as real futures.
-  if (category !== 'Futures' && fhKey.length > 4) {
-    const fhCandles = await fetchFinnhubCandles(upper, timeframe, fhKey);
+  // Stock candles use the shared server-side Finnhub key; visitors never supply their own key.
+  if (category !== 'Futures') {
+    const fhCandles = await fetchFinnhubCandles(upper, timeframe, 'server-managed');
     if (fhCandles && fhCandles.length > 0) {
       return { candles: sanitizeCandleSeries(fhCandles), simulated: false };
     }
