@@ -2,6 +2,7 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'node:module';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -87,12 +88,23 @@ const ALLOWED_TV_RESOLUTIONS = new Set([
   '1M',
 ]);
 
+interface NodeWebSocket {
+  readyState: number;
+  send(data: string): void;
+  close(): void;
+  on(event: 'open', listener: () => void): this;
+  on(event: 'message', listener: (data: unknown) => void): this;
+  on(event: 'error' | 'close', listener: (error?: unknown) => void): this;
+}
+
 type NodeWebSocketCtor = new (
   url: string,
   options?: { headers?: Record<string, string> }
-) => WebSocket;
+) => NodeWebSocket;
 
-const NodeWS = globalThis.WebSocket as unknown as NodeWebSocketCtor;
+const require = createRequire(import.meta.url);
+// Node's built-in WebSocket does not accept custom handshake headers; use ws for TradingView.
+const NodeWS = require('ws') as NodeWebSocketCtor;
 
 function tvPack(method: string, params: unknown[]): string {
   const payload = JSON.stringify({ m: method, p: params });
@@ -264,17 +276,17 @@ function startTradingViewQuoteHub() {
       tvHubWs = ws;
       const qs = `qs_${Math.random().toString(36).slice(2, 10)}`;
 
-      ws.onopen = () => {
+      ws.on('open', () => {
         ws.send(tvPack('set_auth_token', ['unauthorized_user_token']));
         ws.send(tvPack('quote_create_session', [qs]));
         const uniqueTvSyms = Object.keys(TV_REVERSE_SYMBOL_MAP);
         for (const tvSym of uniqueTvSyms) {
           ws.send(tvPack('quote_add_symbols', [qs, tvSym]));
         }
-      };
+      });
 
-      ws.onmessage = (ev) => {
-        const raw = typeof ev.data === 'string' ? ev.data : String(ev.data);
+      ws.on('message', (data: unknown) => {
+        const raw = typeof data === 'string' ? data : String(data);
         for (const part of tvUnpack(raw)) {
           if (part.startsWith('~h~')) {
             if (ws.readyState === 1) {
@@ -343,7 +355,7 @@ function startTradingViewQuoteHub() {
             // Ignore malformed frame
           }
         }
-      };
+      });
 
       const scheduleReconnect = () => {
         if (tvHubWs === ws) tvHubWs = null;
@@ -352,8 +364,8 @@ function startTradingViewQuoteHub() {
         }
       };
 
-      ws.onerror = scheduleReconnect;
-      ws.onclose = scheduleReconnect;
+      ws.on('error', scheduleReconnect);
+      ws.on('close', scheduleReconnect);
     } catch {
       if (!tvHubReconnectTimer) {
         tvHubReconnectTimer = setTimeout(connect, 3000);
@@ -422,7 +434,7 @@ async function fetchTradingViewCandlesFromUpstream(
       volume: number;
     }> = [];
 
-    ws.onopen = () => {
+    ws.on('open', () => {
       ws.send(tvPack('set_auth_token', ['unauthorized_user_token']));
       ws.send(tvPack('chart_create_session', [cs, '']));
       const symSpec: Record<string, string> = {
@@ -434,10 +446,10 @@ async function fetchTradingViewCandlesFromUpstream(
       }
       ws.send(tvPack('resolve_symbol', [cs, 'sds_sym_1', `=${JSON.stringify(symSpec)}`]));
       ws.send(tvPack('create_series', [cs, 'sds_1', 's1', 'sds_sym_1', resolution, count]));
-    };
+    });
 
-    ws.onmessage = (ev) => {
-      const raw = typeof ev.data === 'string' ? ev.data : String(ev.data);
+    ws.on('message', (data: unknown) => {
+      const raw = typeof data === 'string' ? data : String(data);
       for (const part of tvUnpack(raw)) {
         if (part.startsWith('~h~')) {
           if (ws.readyState === 1) {
@@ -509,10 +521,10 @@ async function fetchTradingViewCandlesFromUpstream(
           // Ignore non-JSON frame
         }
       }
-    };
+    });
 
-    ws.onerror = () => finish(null);
-    ws.onclose = () => finish(collected.length > 0 ? collected : null);
+    ws.on('error', () => finish(null));
+    ws.on('close', () => finish(collected.length > 0 ? collected : null));
   });
 }
 
